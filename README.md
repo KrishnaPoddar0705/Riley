@@ -4,12 +4,7 @@ An emotion diary and second brain for iPhone. Name it after the girl from *Insid
 Out*, because that is the idea: every day becomes a coloured orb, and all your
 orbs together make a globe you can spin.
 
-Built with Expo (SDK 56) + React Native + expo-router, TypeScript throughout.
-
-> Pinned to **SDK 56 deliberately**. That is what the App Store build of Expo Go
-> currently runs. SDK 57 is on npm, but Expo Go rejects it with *"Project is
-> incompatible with this version of Expo Go"* until Apple ships the newer client.
-> Don't run `npx expo install --fix` expecting 57 — it will break Expo Go again.
+Built with Expo (SDK 57) + React Native + expo-router, TypeScript throughout.
 
 ---
 
@@ -32,6 +27,28 @@ npx eas build -p ios      # cloud build
 `npm run lint` runs a TypeScript check over the whole project.
 
 ### About the pinned versions
+
+**`expo` and `react-native` are pinned to exact versions on purpose** — `57.0.7`
+and `0.86.0` — and neither should be bumped casually.
+
+Expo Go is a prebuilt binary: you cannot rebuild its native side. React Native
+compares the JS bundle's version against the native one at startup and hard-fails
+when the **minor** versions differ:
+
+```
+React Native version mismatch.
+JavaScript version: 0.85.3
+Native version: 0.86.0
+```
+
+The Expo Go client currently ships native RN `0.86.0`, which is SDK 57. SDK 56
+pins `0.85.3` across every patch, so a 56 project loads and then dies on that
+check. `expo@57.0.9` would also work (RN `0.86.2`, same minor), but `57.0.7`
+matches the client's native version exactly, which is the safer side to be on.
+
+If Expo Go ever refuses the project with *"requires a newer version of Expo Go"*,
+that is the opposite failure — the client is behind the SDK, and the pins need to
+move **down** to whatever SDK that Expo Go build runs.
 
 `react-dom` is pinned to `19.2.3` to match `react` exactly. It is not used by the
 iOS app, but `expo-router` depends on `vaul` and `@radix-ui/*` for its web build,
