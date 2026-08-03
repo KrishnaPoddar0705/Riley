@@ -1,10 +1,8 @@
 /**
  * The globe's geometry, kept apart from its rendering so the sign conventions
- * can be tested rather than eyeballed — getting a rotation backwards is not
- * something you notice by reading the code.
+ * and the layout rules can be tested rather than eyeballed.
  *
- * `project` carries the `'worklet'` directive so it can be called from the UI
- * thread by both the node transforms and the thread path.
+ * `project` carries the `'worklet'` directive so it can run on the UI thread.
  */
 
 export type Projected = {
@@ -13,11 +11,10 @@ export type Projected = {
   y: number;
   /** 0 at the far side, 1 nearest the viewer. */
   depth: number;
-  /** Perspective scale for this point. */
   persp: number;
 };
 
-/** How much nearer points swell. Kept shallow; this is a held object, not a lens. */
+/** How much nearer points swell. Shallow; this is a held object, not a lens. */
 export const PERSPECTIVE = 0.3;
 
 /**
@@ -27,8 +24,7 @@ export const PERSPECTIVE = 0.3;
  *   increasing `spin` moves the front-facing point to the **right**
  *   increasing `tilt` moves the front-facing point **up**
  *
- * So a rightward drag must increase spin, and a downward drag must decrease
- * tilt. Get either backwards and the globe fights the finger.
+ * So a rightward drag increases spin, and a downward drag decreases tilt.
  */
 export const project = (
   px: number,
@@ -64,42 +60,45 @@ export const assemblyProgress = (assembly: number, delay: number, window = 0.42)
 export type Vec = { x: number; y: number; z: number };
 
 /**
- * Nearest-neighbour lattice. Connecting spatial neighbours rather than
- * consecutive days keeps every thread short and hugging the surface, which is
- * what makes the cluster read as strung marbles instead of loose bubbles.
+ * Days wound chronologically around a sphere, like thread on a ball.
+ *
+ * The oldest day starts at the bottom and the newest finishes at the top, so
+ * rotation has meaning: a band of the sphere is a stretch of time, and months
+ * form visible belts. This replaces the Fibonacci scatter, which distributed
+ * points beautifully but told you nothing about when anything happened.
  */
-export const buildLinks = (points: Vec[], perNode = 2): [number, number][] => {
-  const pairs: [number, number][] = [];
-  const seen = new Set<string>();
-  for (let i = 0; i < points.length; i++) {
-    const scored: { j: number; d: number }[] = [];
-    for (let j = 0; j < points.length; j++) {
-      if (i === j) continue;
-      const dx = points[i].x - points[j].x;
-      const dy = points[i].y - points[j].y;
-      const dz = points[i].z - points[j].z;
-      scored.push({ j, d: dx * dx + dy * dy + dz * dz });
-    }
-    scored.sort((a, b) => a.d - b.d);
-    for (const { j } of scored.slice(0, perNode)) {
-      const key = i < j ? `${i}-${j}` : `${j}-${i}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      pairs.push([i, j]);
-    }
-  }
-  return pairs;
-};
-
-/** Evenly spaced points on a sphere — no clumping at the poles. */
-export const fibonacciSphere = (n: number): Vec[] => {
-  const golden = Math.PI * (3 - Math.sqrt(5));
+export const chronologicalSpiral = (n: number, turns = 5.5): Vec[] => {
   const pts: Vec[] = [];
   for (let i = 0; i < n; i++) {
-    const y = 1 - (i / Math.max(1, n - 1)) * 2;
+    const t = n === 1 ? 0.5 : i / (n - 1);
+    // Oldest at the bottom, newest at the top. Negated because cos descends,
+    // and the ends are biased inward so the poles do not crowd.
+    const y = -Math.cos(Math.PI * (0.06 + t * 0.88));
     const r = Math.sqrt(Math.max(0, 1 - y * y));
-    const th = golden * i;
+    const th = t * turns * Math.PI * 2;
     pts.push({ x: Math.cos(th) * r, y, z: Math.sin(th) * r });
   }
   return pts;
 };
+
+/**
+ * The first days of using the app should not look like a failed sphere. Under
+ * about a fortnight the days sit on a gentle arc facing the viewer — a small
+ * constellation that already feels like something.
+ */
+export const openingArc = (n: number): Vec[] => {
+  const pts: Vec[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = n === 1 ? 0.5 : i / (n - 1);
+    const a = (-0.62 + t * 1.24) * Math.PI * 0.5;
+    const lift = Math.sin(t * Math.PI) * 0.22;
+    pts.push({ x: Math.sin(a) * 0.82, y: -lift, z: Math.cos(a) * 0.5 });
+  }
+  return pts;
+};
+
+export const ARC_THRESHOLD = 14;
+
+/** Picks the layout for a given number of days. One rule, applied everywhere. */
+export const layoutFor = (n: number): Vec[] =>
+  n <= ARC_THRESHOLD ? openingArc(n) : chronologicalSpiral(n);

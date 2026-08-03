@@ -1,8 +1,8 @@
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -15,12 +15,21 @@ import { DiaryProvider, useDiary } from '@/store/DiaryProvider';
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 const Navigation = () => {
-  const { ready } = useDiary();
+  const { ready, settings } = useDiary();
   const { c, scheme, reduceMotion } = useTheme();
+  const router = useRouter();
+  const sentToOnboarding = useRef(false);
 
   useEffect(() => {
     if (ready) SplashScreen.hideAsync().catch(() => {});
   }, [ready]);
+
+  // First run goes straight to the three opening screens — no account, no forms.
+  useEffect(() => {
+    if (!ready || settings.onboarded || sentToOnboarding.current) return;
+    sentToOnboarding.current = true;
+    router.replace('/onboarding');
+  }, [ready, settings.onboarded, router]);
 
   useEffect(() => {
     SystemUI.setBackgroundColorAsync(c.canvas).catch(() => {});
@@ -40,6 +49,7 @@ const Navigation = () => {
         }}
       >
         <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="onboarding" options={{ animation: 'fade', gestureEnabled: false }} />
         <Stack.Screen
           name="compose-orb"
           options={{
@@ -50,6 +60,14 @@ const Navigation = () => {
         />
         <Stack.Screen
           name="day/[day]"
+          options={{
+            presentation: 'modal',
+            animation: reduceMotion ? 'fade' : 'slide_from_bottom',
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
+          name="keepsake"
           options={{
             presentation: 'modal',
             animation: reduceMotion ? 'fade' : 'slide_from_bottom',

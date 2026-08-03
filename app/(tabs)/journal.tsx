@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
   FlatList,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -16,25 +17,22 @@ import {
 import { EmotionalOrb } from '@/components/EmotionalOrb';
 import { JournalEntryRow } from '@/components/JournalEntryRow';
 import { Paper } from '@/components/Paper';
-import { DateHeader, IconButton, Rule } from '@/components/Primitives';
+import { DateHeader, IconButton, QuietButton, Rule, TextAction } from '@/components/Primitives';
 import { useTheme } from '@/design/theme';
 import { MIN_TARGET, radius, space } from '@/design/tokens';
-import { EMOTIONS, EmotionKey, emotionColor } from '@/emotions/palette';
+import { EMOTIONS, EmotionKey } from '@/emotions/palette';
 import { useDiary } from '@/store/DiaryProvider';
-import { composition, isBlank } from '@/store/orb';
-import {
-  fromDayKey,
-  monthMatrix,
-  monthTitle,
-  todayKey,
-  WEEKDAYS_MIN,
-} from '@/utils/date';
+import { isBlank } from '@/store/orb';
+import { fromDayKey, monthMatrix, monthTitle, todayKey, WEEKDAYS_MIN } from '@/utils/date';
 
 type Mode = 'timeline' | 'calendar';
+type Attach = 'any' | 'photos' | 'voice';
 
 /**
- * The journal. A chronological read of the diary, with the month grid folded in
- * behind a toggle rather than occupying a navigation slot of its own.
+ * The journal: a quiet archive.
+ *
+ * Search, calendar and filter are three icons. Everything else lives in a sheet,
+ * so the top of the screen is never a row of category chips.
  */
 export default function JournalScreen() {
   const router = useRouter();
@@ -43,14 +41,15 @@ export default function JournalScreen() {
   const { orbFor, noteFor, entriesFor, nameOf, loggedDays, entries } = useDiary();
 
   const [mode, setMode] = useState<Mode>('timeline');
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<EmotionKey | null>(null);
   const [searching, setSearching] = useState(false);
+  const [query, setQuery] = useState('');
+  const [filtering, setFiltering] = useState(false);
+  const [emotion, setEmotion] = useState<EmotionKey | null>(null);
+  const [attach, setAttach] = useState<Attach>('any');
 
   const now = new Date();
   const [cursor, setCursor] = useState({ year: now.getFullYear(), month: now.getMonth() });
 
-  /** Days worth showing: anything with an orb, a reflection, or a saved thing. */
   const days = useMemo(() => {
     const set = new Set<string>(loggedDays);
     for (const e of entries) set.add(e.day);
@@ -60,18 +59,25 @@ export default function JournalScreen() {
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return days.filter((day) => {
-      if (filter) {
+      if (emotion) {
         const orb = orbFor(day);
-        if (isBlank(orb) || !orb!.stops.some((s) => s.emotion === filter)) return false;
+        if (isBlank(orb) || !orb!.feelings.some((f) => f.emotion === emotion)) return false;
+      }
+      if (attach !== 'any') {
+        const kind = attach === 'photos' ? 'photo' : 'voice';
+        if (!entriesFor(day).some((e) => e.attachments.some((a) => a.kind === kind))) return false;
       }
       if (!q) return true;
-      const hay = [noteFor(day), ...entriesFor(day).map((e) => `${e.text} ${e.tags.join(' ')}`)]
+      const n = noteFor(day);
+      const hay = [n.title, n.text, n.bright, n.difficult, ...entriesFor(day).map((e) => e.text)]
+        .filter(Boolean)
         .join(' ')
         .toLowerCase();
       return hay.includes(q);
     });
-  }, [days, query, filter, orbFor, noteFor, entriesFor]);
+  }, [days, query, emotion, attach, orbFor, noteFor, entriesFor]);
 
+  const filtered = !!emotion || attach !== 'any';
   const cells = useMemo(() => monthMatrix(cursor.year, cursor.month), [cursor]);
   const cell = Math.floor((width - space.lg * 2) / 7);
 
@@ -91,7 +97,7 @@ export default function JournalScreen() {
     <Paper>
       <View style={styles.head}>
         <DateHeader meta="Journal" />
-        <View style={styles.headActions}>
+        <View style={styles.actions}>
           <IconButton
             label={searching ? 'Close search' : 'Search'}
             onPress={() => {
@@ -114,6 +120,13 @@ export default function JournalScreen() {
               color={c.inkSoft}
             />
           </IconButton>
+          <IconButton label="Filter" onPress={() => setFiltering(true)}>
+            <Ionicons
+              name={filtered ? 'funnel' : 'funnel-outline'}
+              size={17}
+              color={filtered ? c.ink : c.inkSoft}
+            />
+          </IconButton>
         </View>
       </View>
 
@@ -132,24 +145,6 @@ export default function JournalScreen() {
           />
         </View>
       ) : null}
-
-      {/* Colour filter. Named, not colour-only. */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.filters}
-      >
-        <FilterChip label="All" active={!filter} onPress={() => setFilter(null)} />
-        {EMOTIONS.map((e) => (
-          <FilterChip
-            key={e.key}
-            label={nameOf(e.key)}
-            color={e.color}
-            active={filter === e.key}
-            onPress={() => setFilter((f) => (f === e.key ? null : e.key))}
-          />
-        ))}
-      </ScrollView>
 
       {mode === 'timeline' ? (
         <FlatList
@@ -170,7 +165,7 @@ export default function JournalScreen() {
           )}
           ListEmptyComponent={
             <Text style={[t('body', { color: c.inkFaint }), styles.empty]}>
-              {query || filter ? 'Nothing matches that.' : 'Your days will collect here.'}
+              {query || filtered ? 'Nothing matches that.' : 'Your days will collect here.'}
             </Text>
           }
         />
@@ -204,26 +199,19 @@ export default function JournalScreen() {
               const orb = orbFor(day);
               const blank = isBlank(orb);
               const isToday = day === todayKey();
-              const d = Math.round(cell * 0.6);
+              const d = Math.round(cell * 0.62);
               return (
                 <Pressable
                   key={day}
                   onPress={() => router.push(`/day/${day}`)}
                   accessibilityRole="button"
-                  accessibilityLabel={
-                    blank
-                      ? `${fromDayKey(day).getDate()}, nothing recorded`
-                      : `${fromDayKey(day).getDate()}, ${composition(orb!)
-                          .slice(0, 2)
-                          .map((p) => nameOf(p.emotion))
-                          .join(' and ')}`
-                  }
+                  accessibilityLabel={`${fromDayKey(day).getDate()}${blank ? ', not coloured' : ''}`}
                   style={{ width: cell, height: cell + 14, alignItems: 'center' }}
                 >
                   {blank ? (
-                    // Empty days stay empty. No outlined placeholder rings.
                     <View style={{ height: d }} />
                   ) : (
+                    // Real mixed orbs in the grid, not flat dots.
                     <EmotionalOrb orb={orb} size={d} glow={false} />
                   )}
                   <Text
@@ -242,6 +230,65 @@ export default function JournalScreen() {
           </View>
         </ScrollView>
       )}
+
+      {/* Filters live here, not across the top of the screen. */}
+      <Modal
+        visible={filtering}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setFiltering(false)}
+      >
+        <View style={[styles.sheet, { backgroundColor: c.canvas }]}>
+          <View style={styles.sheetBar}>
+            <Text style={t('heading')}>Filter</Text>
+            <IconButton label="Close" onPress={() => setFiltering(false)}>
+              <Ionicons name="close" size={22} color={c.ink} />
+            </IconButton>
+          </View>
+
+          <ScrollView contentContainerStyle={{ paddingBottom: space.xl }}>
+            <Text style={[t('meta', { color: c.inkFaint }), styles.sheetLabel]}>FEELING</Text>
+            <View style={styles.chips}>
+              <FilterChip label="Any" active={!emotion} onPress={() => setEmotion(null)} />
+              {EMOTIONS.map((e) => (
+                <FilterChip
+                  key={e.key}
+                  label={nameOf(e.key)}
+                  color={e.color}
+                  active={emotion === e.key}
+                  onPress={() => setEmotion((f) => (f === e.key ? null : e.key))}
+                />
+              ))}
+            </View>
+
+            <Text style={[t('meta', { color: c.inkFaint }), styles.sheetLabel]}>CONTAINS</Text>
+            <View style={styles.chips}>
+              {(['any', 'photos', 'voice'] as Attach[]).map((a) => (
+                <FilterChip
+                  key={a}
+                  label={a === 'any' ? 'Anything' : a === 'photos' ? 'Photos' : 'Voice notes'}
+                  active={attach === a}
+                  onPress={() => setAttach(a)}
+                />
+              ))}
+            </View>
+          </ScrollView>
+
+          <View style={styles.sheetFoot}>
+            {filtered ? (
+              <TextAction
+                label="Clear filters"
+                align="center"
+                onPress={() => {
+                  setEmotion(null);
+                  setAttach('any');
+                }}
+              />
+            ) : null}
+            <QuietButton label="Show days" tone="primary" onPress={() => setFiltering(false)} />
+          </View>
+        </View>
+      </Modal>
     </Paper>
   );
 }
@@ -273,7 +320,7 @@ const FilterChip = ({
       ]}
     >
       {color ? <View style={[styles.chipDot, { backgroundColor: color }]} /> : null}
-      <Text style={t('caption', { color: active ? c.ink : c.inkSoft })}>{label}</Text>
+      <Text style={t('label', { color: active ? c.ink : c.inkSoft })}>{label}</Text>
     </Pressable>
   );
 };
@@ -285,24 +332,13 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingTop: space.md,
   },
-  headActions: { flexDirection: 'row', alignItems: 'center' },
+  actions: { flexDirection: 'row', alignItems: 'center' },
   search: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     paddingVertical: space.sm,
     marginTop: space.sm,
   },
-  filters: { gap: space.sm, paddingVertical: space.md, paddingRight: space.lg },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    height: 34,
-    paddingHorizontal: space.md,
-    borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  chipDot: { width: 8, height: 8, borderRadius: 4 },
-  list: { paddingBottom: space.xxl },
+  list: { paddingTop: space.sm, paddingBottom: space.xxl },
   empty: { textAlign: 'center', marginTop: space.xxl },
   monthBar: {
     flexDirection: 'row',
@@ -313,4 +349,19 @@ const styles = StyleSheet.create({
   },
   weekHead: { flexDirection: 'row', marginBottom: space.sm },
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
+  sheet: { flex: 1, paddingHorizontal: space.lg, paddingTop: space.lg },
+  sheetBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sheetLabel: { marginTop: space.xl, marginBottom: space.sm },
+  sheetFoot: { paddingVertical: space.lg, gap: space.sm },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    minHeight: MIN_TARGET,
+    paddingHorizontal: 14,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+  },
+  chipDot: { width: 14, height: 14, borderRadius: 7 },
 });

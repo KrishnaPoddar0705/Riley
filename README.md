@@ -1,8 +1,11 @@
 # Riley
 
-An emotion diary and second brain for iPhone. Name it after the girl from *Inside
-Out*, because that is the idea: every day becomes a coloured orb, and all your
-orbs together make a globe you can spin.
+**Your days are more than one emotion.**
+
+A private visual diary. Every day becomes one orb — not a mood label, but the
+actual mixture: happy but exhausted, proud with something anxious underneath, a
+hard day with one beautiful moment in it. Over time the orbs gather into a globe
+of your own.
 
 Built with Expo (SDK 54) + React Native + expo-router, TypeScript throughout.
 
@@ -69,35 +72,37 @@ another. Keep `package-lock.json` committed and this stays a non-issue.
 
 ## What's in it
 
-**Today.** One question, one object, one action. A globe of your recent days
-fills the page; today's orb sits beneath it, empty and slowly breathing until
-you shape it.
+**Today.** Today's orb is the largest thing on the screen and the only primary
+action. Colour it, then the globe below shows everything kept so far.
 
-**The orb.** A day is not one feeling, so an orb is not one colour. Touch the
-face to leave a pigment, drag to move it, hold to deepen it, pinch to spread it.
-Two feelings meeting blend like wet ink rather than splitting into a pie chart,
-and a colour can be sunk beneath the others to give the day a darker centre.
-Every gesture has a visible control beside it.
+**A day is rarely one feeling.** You name what was most present, say whether
+anything sat underneath it — on the surface, underneath, around the edges, or as
+a brief moment — and how much of the day it took. You never draw, position or
+blend anything; the renderer composes the orb from the description, so no input
+can produce an ugly result. The composition is spoken, never charted:
+*"Mostly calm, with some worry underneath."*
 
-**The globe.** Days laid oldest-to-newest along a Fibonacci spiral. Drag to
-turn it; it carries weighted momentum and settles under its own weight. At rest
-it is still.
+**The globe.** One coherent model at every scale: a facing arc for your first
+fortnight, a chronological spiral for a season — oldest at the bottom, newest at
+the top, so turning it moves through time — and month forms past a year that you
+tap to open. Drag to turn, pinch to come closer, double-tap to recentre.
 
-**Journal.** A chronological read of the diary, with the month grid folded in
-behind a toggle. Search what you wrote; filter by colour.
+**Journal.** A quiet archive. Search, calendar and filter are three icons;
+filters open in a sheet. The calendar shows real mixed orbs, not dots.
 
-**Settings.** Two quiet lines of record, gentle observations you can switch off,
-and the ability to rename any colour — the default names are only defaults.
+**Keepsakes.** A day or a week as a shareable card. Nothing you wrote is
+included unless you explicitly choose it.
 
-See [DESIGN.md](./DESIGN.md) for the full design system, interaction decisions,
-accessibility work and performance trade-offs.
+See [DESIGN.md](./DESIGN.md) for the full audit, design system, retention and
+privacy reasoning, accessibility work and performance trade-offs.
 
 ## Notes on the globe's performance budget
 
-Each orb needs its own projection worklet per frame, so the sphere is capped at
-**110 nodes** (`MAX_NODES` in `src/components/OrbGlobe.tsx`). Longer ranges do
-not add orbs — they sample days, preferring one that actually has an orb. That
-keeps a month and a year rendering at the same cost.
+Each position needs its own projection worklet per frame, so the globe is capped
+at **110 nodes** (`MAX_NODES` in `src/components/OrbGlobe.tsx`). Past
+`AGGREGATE_ABOVE` days it switches to one node per month rather than shrinking
+days into specks nobody can tap — so a month, a year and five years all render
+at the same cost.
 
 ---
 
@@ -105,19 +110,21 @@ keeps a month and a year rendering at the same cost.
 
 ```
 app/
-  _layout.tsx          providers, theme, grain, modal presentation
+  _layout.tsx          providers, theme, first-run routing
+  onboarding.tsx       three screens, no account
   (tabs)/              Today · Globe · Journal · Settings
-  compose-orb.tsx      the daily ritual: shape, write, save
-  day/[day].tsx        one day: its orb, its words, what was kept
+  compose-orb.tsx      the daily ritual: name it, keep it
+  day/[day].tsx        one day as a finished page
+  keepsake.tsx         shareable card, privacy-first
 src/
   design/              tokens + theme provider (light / dark, a11y state)
   emotions/palette.ts  twelve pigments, renameable
-  store/               orb model, diary state, legacy migration, seed
-  insights/            gentle observations, off until asked for
-  components/          EmotionalOrb, OrbPainter, OrbGlobe, Primitives, …
+  store/orb.ts         the feeling model, and migration from every older shape
+  insights/            gentle observations + memory resurfacing
+  components/          EmotionalOrb, FeelingComposer, OrbGlobe, globeMath, …
   utils/               date keys, month grids
 ```
 
-Everything is stored locally via `AsyncStorage`. Nothing leaves the phone. On
-first launch Riley seeds ~84 days so the globe has something to turn; **Erase
-everything** in Settings regenerates it.
+Everything is stored locally via `AsyncStorage`. Nothing leaves the phone. Days
+recorded under any earlier version of the app are migrated on read, so nothing
+already written is lost.

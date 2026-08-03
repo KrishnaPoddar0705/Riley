@@ -3,21 +3,33 @@ import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import {
+  ActionSheetIOS,
+  Alert,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 
-import { AttachmentTray, openLink } from '@/components/Capture';
+import { openLink } from '@/components/Capture';
 import { EmotionalOrb } from '@/components/EmotionalOrb';
 import { Paper } from '@/components/Paper';
-import { IconButton, QuietButton, Rule, TextAction } from '@/components/Primitives';
+import { IconButton, Rule, TextAction } from '@/components/Primitives';
 import { VoiceNotePlayer } from '@/components/VoiceRecorder';
 import { useTheme } from '@/design/theme';
 import { radius, space } from '@/design/tokens';
 import { useDiary } from '@/store/DiaryProvider';
-import { composition, isBlank } from '@/store/orb';
-import { formatLong, relativeDay, todayKey } from '@/utils/date';
+import { describeOrb, isBlank } from '@/store/orb';
+import { formatLong, fromDayKey, relativeDay, todayKey } from '@/utils/date';
 
 /**
- * A day, opened. The orb first, then what was written, then whatever was kept.
+ * A day, opened — a finished page rather than an editor.
+ *
+ * The date appears once. Editing is quiet. Deleting lives in the overflow,
+ * because this is a memory, not a record to be managed.
  */
 export default function DayScreen() {
   const router = useRouter();
@@ -26,37 +38,49 @@ export default function DayScreen() {
   const { day: raw } = useLocalSearchParams<{ day: string }>();
   const day = raw ?? todayKey();
 
-  const { orbFor, noteFor, entriesFor, nameOf, saveNote, deleteDay } = useDiary();
+  const { orbFor, noteFor, entriesFor, nameOf, deleteDay } = useDiary();
 
   const orb = orbFor(day);
   const blank = isBlank(orb);
+  const note = noteFor(day);
   const entries = entriesFor(day).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
-  const [note, setNote] = useState(() => noteFor(day));
-  const [editing, setEditing] = useState(false);
-
-  const parts = blank ? [] : composition(orb!);
-  const orbSize = Math.min(width * 0.5, 200);
+  const orbSize = Math.min(width * 0.46, 190);
   const mediaWidth = width - space.lg * 2;
-
-  const commitNote = async () => {
-    await saveNote(day, note);
-    setEditing(false);
-    Haptics.selectionAsync().catch(() => {});
-  };
+  const weekday = fromDayKey(day).toLocaleDateString(undefined, { weekday: 'long' });
 
   const confirmDelete = () =>
-    Alert.alert('Remove this day?', 'The orb and anything written on it will be erased.', [
+    Alert.alert('Remove this day?', 'The orb and everything written on it will be erased.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Remove',
         style: 'destructive',
         onPress: async () => {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
           await deleteDay(day);
           router.back();
         },
       },
     ]);
+
+  const overflow = () => {
+    const options = ['Make a keepsake', 'Remove this day', 'Cancel'];
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options, destructiveButtonIndex: 1, cancelButtonIndex: 2 },
+        (i) => {
+          if (i === 0) router.push({ pathname: '/keepsake', params: { day } });
+          if (i === 1) confirmDelete();
+        }
+      );
+    } else {
+      Alert.alert('This day', undefined, [
+        { text: 'Make a keepsake', onPress: () => router.push({ pathname: '/keepsake', params: { day } }) },
+        { text: 'Remove this day', style: 'destructive', onPress: confirmDelete },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  };
 
   return (
     <Paper edges={['top', 'bottom']} padded={false}>
@@ -64,111 +88,96 @@ export default function DayScreen() {
         <IconButton label="Close" onPress={() => router.back()}>
           <Ionicons name="close" size={22} color={c.ink} />
         </IconButton>
-        <Text style={t('label', { color: c.inkSoft })}>{relativeDay(day)}</Text>
-        <IconButton label="Remove this day" onPress={confirmDelete}>
-          <Ionicons name="trash-outline" size={19} color={c.inkFaint} />
+        <IconButton label="More" onPress={overflow}>
+          <Ionicons name="ellipsis-horizontal" size={20} color={c.inkSoft} />
         </IconButton>
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        {/* The date, once. */}
+        <Text style={t('meta', { color: c.inkFaint })} accessibilityRole="header">
+          {formatLong(day).toUpperCase()} · {weekday.toUpperCase()}
+        </Text>
+        {note.title ? <Text style={[t('title'), styles.title]}>{note.title}</Text> : null}
+
         <View style={styles.hero}>
           <EmotionalOrb orb={orb} size={orbSize} placeholder={blank} />
-          <Text style={[t('meta', { color: c.inkFaint }), styles.date]}>
-            {formatLong(day).toUpperCase()}
+        </View>
+
+        {!blank ? (
+          <Text style={[t('quote', { color: c.inkSoft }), styles.summary]}>
+            {describeOrb(orb!, nameOf)}
           </Text>
-          {parts.length ? (
-            <Text style={[t('body', { color: c.inkSoft }), styles.mix]}>
-              {parts
-                .slice(0, 3)
-                .map((p) => `${Math.round(p.share * 100)}% ${nameOf(p.emotion).toLowerCase()}`)
-                .join(' · ')}
-            </Text>
-          ) : null}
-        </View>
+        ) : (
+          <Text style={[t('body', { color: c.inkFaint }), styles.summary]}>
+            This day was never coloured.
+          </Text>
+        )}
 
-        <View style={styles.body}>
-          {editing ? (
-            <>
-              <TextInput
-                value={note}
-                onChangeText={setNote}
-                multiline
-                autoFocus
-                placeholder="What made it feel this way?"
-                placeholderTextColor={c.inkFaint}
-                style={[t('prose'), styles.input, { color: c.ink }]}
-                textAlignVertical="top"
-                accessibilityLabel="Reflection"
-              />
-              <View style={styles.editRow}>
-                <TextAction
-                  label="Cancel"
-                  onPress={() => {
-                    setNote(noteFor(day));
-                    setEditing(false);
-                  }}
+        {note.text ? (
+          <Text style={[t('prose'), styles.body]}>{note.text}</Text>
+        ) : (
+          <TextAction
+            label="Add a few words"
+            onPress={() => router.push({ pathname: '/compose-orb', params: { day } })}
+            style={styles.body}
+          />
+        )}
+
+        {note.bright ? (
+          <View style={styles.aside}>
+            <Text style={t('meta', { color: c.inkFaint })}>A QUIET LIGHT</Text>
+            <Text style={[t('body'), { marginTop: space.xs }]}>{note.bright}</Text>
+          </View>
+        ) : null}
+
+        {note.difficult ? (
+          <View style={styles.aside}>
+            <Text style={t('meta', { color: c.inkFaint })}>WHAT WEIGHED ON ME</Text>
+            <Text style={[t('body'), { marginTop: space.xs }]}>{note.difficult}</Text>
+          </View>
+        ) : null}
+
+        {entries.length ? <Rule style={{ marginVertical: space.xl }} /> : null}
+
+        {entries.map((e) => (
+          <View key={e.id} style={styles.entry}>
+            {e.text.trim() ? <Text style={t('body')}>{e.text}</Text> : null}
+            {e.attachments
+              .filter((a) => a.kind === 'voice')
+              .map((a) => (
+                <VoiceNotePlayer key={a.id} uri={a.uri} duration={a.duration} />
+              ))}
+            {e.attachments
+              .filter((a) => a.kind === 'photo')
+              .map((a) => (
+                <Image
+                  key={a.id}
+                  source={{ uri: a.uri }}
+                  style={[styles.photo, { width: mediaWidth, height: mediaWidth * 0.72 }]}
+                  contentFit="cover"
+                  transition={180}
                 />
-                <TextAction label="Save" onPress={commitNote} />
-              </View>
-            </>
-          ) : (
-            <TextAction
-              label={note.trim() || 'Add a few words'}
-              onPress={() => setEditing(true)}
-              textStyle={
-                note.trim()
-                  ? { ...t('prose'), color: c.ink }
-                  : { ...t('body'), color: c.inkFaint }
-              }
-              style={styles.noteTap}
-            />
-          )}
+              ))}
+            {e.attachments
+              .filter((a) => a.kind === 'link')
+              .map((a) => (
+                <TextAction
+                  key={a.id}
+                  label={a.title || a.uri.replace(/^https?:\/\//, '')}
+                  onPress={() => openLink(a.uri)}
+                />
+              ))}
+          </View>
+        ))}
 
-          {entries.length ? <Rule style={{ marginVertical: space.lg }} /> : null}
-
-          {entries.map((e) => (
-            <View key={e.id} style={styles.entry}>
-              {e.text.trim() ? <Text style={t('body')}>{e.text}</Text> : null}
-              {e.attachments
-                .filter((a) => a.kind === 'voice')
-                .map((a) => (
-                  <VoiceNotePlayer key={a.id} uri={a.uri} duration={a.duration} />
-                ))}
-              {e.attachments
-                .filter((a) => a.kind === 'photo')
-                .map((a) => (
-                  <Image
-                    key={a.id}
-                    source={{ uri: a.uri }}
-                    style={[styles.photo, { width: mediaWidth, height: mediaWidth * 0.72 }]}
-                    contentFit="cover"
-                    transition={180}
-                  />
-                ))}
-              {e.attachments
-                .filter((a) => a.kind === 'link')
-                .map((a) => (
-                  <TextAction
-                    key={a.id}
-                    label={a.title || a.uri.replace(/^https?:\/\//, '')}
-                    onPress={() => openLink(a.uri)}
-                  />
-                ))}
-              {e.attachments.some((a) => a.kind === 'video') ? (
-                <AttachmentTray attachments={e.attachments.filter((a) => a.kind === 'video')} />
-              ) : null}
-            </View>
-          ))}
-        </View>
-      </ScrollView>
-
-      <View style={styles.footer}>
-        <QuietButton
-          label={blank ? 'Shape this day' : 'Reshape the orb'}
-          tone="primary"
+        <Rule style={{ marginTop: space.xl }} />
+        <TextAction
+          label={blank ? 'Colour this day' : 'Edit this day'}
           onPress={() => router.push({ pathname: '/compose-orb', params: { day } })}
+          style={styles.edit}
         />
-      </View>
+      </ScrollView>
     </Paper>
   );
 }
@@ -181,15 +190,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingTop: space.sm,
   },
-  content: { paddingBottom: space.xl },
-  hero: { alignItems: 'center', paddingTop: space.lg, gap: space.md },
-  date: { marginTop: space.sm },
-  mix: { textAlign: 'center', paddingHorizontal: space.lg },
-  body: { paddingHorizontal: space.lg, marginTop: space.xl },
-  noteTap: { minHeight: 60, alignItems: 'flex-start' },
-  input: { minHeight: 120 },
-  editRow: { flexDirection: 'row', gap: space.lg },
+  content: { paddingHorizontal: space.lg, paddingBottom: space.xxl },
+  title: { marginTop: space.xs },
+  hero: { alignItems: 'center', marginTop: space.xl },
+  summary: { marginTop: space.xl, textAlign: 'center' },
+  body: { marginTop: space.xl },
+  aside: { marginTop: space.xl },
   entry: { gap: space.md, marginBottom: space.lg },
   photo: { borderRadius: radius.md },
-  footer: { paddingHorizontal: space.lg, paddingBottom: space.sm, paddingTop: space.md },
+  edit: { marginTop: space.sm },
 });

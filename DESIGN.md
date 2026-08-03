@@ -1,210 +1,226 @@
 # Riley — design notes
 
-A record of the redesign: what was wrong, what replaced it, and why each
+> **Your days are more than one emotion.**
+
+A record of what the product is, what was wrong at each stage, and why each
 decision went the way it did.
 
 ---
 
-## Audit of what was there
+## Thesis
 
-The first build was competent and cluttered. Specifically:
+A mood tracker reduces a day to a label. This does the opposite: it keeps the
+contradiction. Happy but exhausted. Proud with something anxious underneath.
+A hard day with one beautiful moment in it.
 
-| Problem | Where |
+The user is not logging a mood. They are keeping the colour of a day.
+
+---
+
+## Audit — round three
+
+The second build fixed the clutter but created three new problems, all visible
+on device.
+
+| Problem | Why it mattered |
 |---|---|
-| A script face used for the user's name and section headings | every screen |
-| Five navigation items, plus a capture toolbar underneath the bar | tab bar |
-| Three KPIs in a black slab — streak, "days coloured", "saved" | Home |
-| A row of unlabelled coloured dots | Home |
-| Translucent glass cards stacked on gradient blobs on a starfield | every screen |
-| Large segmented range buttons above the globe | Globe |
-| A "most of the time" percentage chart with progress bars | Globe |
-| One emotion per day, chosen from a carousel with a 0–99% readout | Check-in |
-| Grey caption text at 2.9:1 contrast | throughout |
+| Threads between orbs | Read as a network graph, a molecular model, a social diagram. The lines carried no meaning, so they were noise pretending to be information. |
+| Orbs looked alike | Nearly every orb was a glossy single-colour sphere, which quietly contradicts the entire product claim. |
+| The editor was an art program | Brush, airbrush, eraser, undo, redo, sizes, flow, percentages. Nobody should need Photoshop to describe a Tuesday. |
+| Painted output looked broken | Imprecise gestures produced geometric marks that read as rendering artefacts. That destroys trust in one glance. |
+| Home had no focal action | The globe was the largest object on a screen whose job is *colour today*. |
+| Journal filter carousel | Horizontal overflow, clipped "Confidence" — an unfinished shopping filter bar. |
+| Entry detail | Date repeated three times, a giant "Reshape the Orb", delete at the top. |
+| "Unnamed" as an emotion label | Read as missing data. |
 
-Four font styles, three surface materials and six competing focal points meant
-no screen had a dominant purpose. The check-in also flattened a day into a
-single feeling, which is the one thing the product should never do.
+Two of these came from me implementing an earlier request literally — the
+connecting threads were built to spec last round and are now removed, because
+seeing them in place showed they fought the product.
 
-## Information architecture
+---
 
-**Five tabs → four.** Calendar folded into Journal behind a toggle; Profile
-became Settings.
+## The orb: described, not drawn
 
-```
-Today · Globe · Journal · Settings
-   └── compose-orb (modal)   └── day/[day] (modal)
-```
+**Before:** the user painted. Washes, then brush strokes with size, flow and an
+eraser. The app faithfully rendered whatever was drawn — including the mess.
 
-The `entry/[id]` and `compose` screens went away. Everything now belongs to a
-day, so a day is the only detail view.
+**After:** the user *describes*. Three things, in words:
 
-## The orb is a canvas
-
-A day is painted, not configured. Two kinds of paint land on the face:
-
-- a **wash** — a soft radial bloom, the broad sense of how a day felt
-- a **stroke** — something you drew, with a direction, a width and a flow
-
-Three tools. The **brush** carries colour; the **airbrush** shades in faint
-passes you build up a layer at a time; the **eraser** takes paint back off.
-Three sizes, three flow strengths. Undo, redo and clear cover both kinds.
-
-Each mark is laid down as three concentric passes — wide and faint, then
-tighter and stronger — which is what gives a stroke a soft shoulder instead of
-the hard vector edge a single line would have. Erasing works through an SVG
-mask, so it cuts back to the bare sphere rather than painting over in
-background colour.
-
-The body underneath is deliberately pale. The first version darkened it toward
-the dominant pigment and then dropped a heavy shade over the limb, which turned
-every two-colour orb into grey-green sludge; the base now sits well above the
-paint and the limb occlusion is a third of what it was.
-
-## The data model
-
-The core model changed. A day used to be:
+| The user says | The renderer does |
+|---|---|
+| **Which feeling** | Sets the body colour |
+| **Where it sat** — on the surface / underneath / around the edges / a brief moment | Chooses the visual role |
+| **How much** — a little / some / a lot | Sets presence |
+| **"It never quite settled"** | Adds marbling and haze |
 
 ```ts
-{ emotion: 'joy', intensity: 0.8, also: ['calm'] }
+type Feeling = { emotion, place: Placement, presence: number, seed: number }
+type Orb     = { day, feelings: Feeling[], clarity: number }
 ```
 
-It is now a composition of pigments placed on a face:
+Nothing in `EmotionalOrb.tsx` comes from a coordinate the user chose. Positions
+derive from a golden-angle walk seeded per feeling, so two calm days never look
+identical and **no input can produce an ugly orb**. That is the point of the
+rewrite: the app is responsible for the beauty, the user is responsible for the
+truth.
 
-```ts
-{
-  stops:   [{ emotion, x, y, weight, spread, depth }],
-  strokes: [{ emotion, kind, pts, size, flow }],
-}
-```
+### Expressive range
 
-Each stop paints as a translucent radial wash, back to front, so two feelings
-meeting produce a third colour rather than a pie slice. `depth: true` sinks a
-stop beneath the others — that is how "a joyful exterior with a darker centre"
-is expressed. Share is computed from `weight × (0.4 + spread)`, so a wide faint
-wash correctly reads as more of the day than a small intense dot.
+- **Surface** — off-centre soft washes, blended
+- **Core** — a dense centre in the deeper shade: the private feeling
+- **Edge** — a rim that never quite resolves
+- **Moment** — small flecks, three per feeling, never a pattern
+- **Marbling** — when feelings conflict, the same colours pulled the other way
+- **Haze** — a pale veil when the day did not settle
+- **Asymmetry** — the light source shifts a few degrees per day
 
-**Existing data is preserved.** `orbFromLegacyMood` lifts every old single-
-emotion record into an orb — the primary feeling becomes a broad central wash at
-its recorded intensity, each secondary becomes a smaller fleck. Migration is
-lazy, deterministic, and never overwrites a real orb.
+### No percentages
 
-## Tokens
+Composition is spoken, not measured:
 
-`src/design/tokens.ts` and `src/design/theme.tsx`.
+> *Mostly calm, with some worry underneath and a brief joy.*
 
-- **Colour** — warm ivory paper (`#F4F1EA`) and smoked linen dark (`#15140F`).
-  Fifteen surface tokens per scheme, one restrained sage accent. No gradients.
-- **Typography** — two families. System sans for everything; Georgia italic for
-  the one emotional word per screen. Nine roles, all scaled by Dynamic Type and
-  clamped at 1.55× so orb layouts survive the largest accessibility sizes.
-- **Elevation** — three levels, applied only through `NeumorphicControl`.
-- **Motion** — press 140ms, screen 300ms, orb morph 460ms, breathing 6.2s.
-  Every value is skipped when Reduce Motion is on.
-- **Emotion palette** — twelve pigments named after materials (marigold,
-  mineral blue, vermilion), each with a deeper shade for sunk stops.
+The same sentence is the VoiceOver label. Percentages exist in `composition()`
+for the globe's colour and for screen readers, and appear nowhere in the UI.
 
-## Neumorphism, rationed
+---
 
-React Native gives one shadow per view, so the "lit from the top-left" read
-comes from a light hairline border plus a single soft drop rather than the
-usual doubled shadow. It appears on exactly four things: the orb canvas, the
-save button, colour wells, and the range sheet. Everything else is flat paper
-separated by hairlines.
+## The globe: time you can turn
 
-## Interaction decisions
+**Before:** Fibonacci scatter with nearest-neighbour threads. Beautiful
+distribution, zero information — and the lines made it look generated.
 
-**The globe turns slowly on its own** — about 0.055 rad/s, the way a held
-object does. Momentum from a flick bleeds off *into* that drift rather than to
-a dead stop, so it never lurches to a halt.
+**After:** one spatial model, applied everywhere.
 
-**Drag right and it turns right.** This was inverted, and the sign convention
-now lives in `globeMath.ts` where it can be tested rather than eyeballed:
-increasing `spin` moves the front-facing point right, increasing `tilt` moves it
-up — so a rightward drag increases spin and a downward drag *decreases* tilt.
-There are assertions for each direction, plus assertions that the gesture
-handlers still match.
+| Days | Layout | Why |
+|---|---|---|
+| ≤ 14 | Gentle facing arc | A first week must already feel like something, not a failed sphere |
+| 15–120 | Chronological spiral | Oldest at the bottom, newest at the top; turning it moves through time and months form belts |
+| > 120 | One node per month | Days never shrink below a fingertip. Tap a month to open its days |
 
-**One finger turns, two fingers slide, pinch comes closer** (0.85×–2.2×, with
-the slide springing back when you zoom out).
+Threads removed entirely. **The structure is the time, not a graph.**
 
-**Threads run between neighbouring orbs.** Each orb links to its two nearest
-spatial neighbours — not to the next day, which on a Fibonacci spiral would
-throw long chords across the sphere. The lattice is split into near and far
-halves at different opacities so it wraps the cluster.
+Interaction: drag to turn (right turns right), flick for weighted momentum,
+pinch 0.9–1.8×, double-tap to recentre, and a slow idle drift so it feels held
+rather than parked. On arrival the orbs gather in from beyond the sphere,
+staggered along the spiral over 1.6s.
 
-**The orbs assemble on arrival.** They drift in from ~2.4× radius, staggered
-along the spiral, easing over 1.7s; the threads fade in once the orbs have
-landed.
+---
 
-**Days are laid oldest-to-newest along a Fibonacci spiral**, so the globe has a
-readable grain instead of scattered bubbles. Long ranges sample days rather than
-adding nodes, and sampling prefers a day that actually has an orb.
+## Home: one job
 
-**Every gesture has a visible equivalent.** Tools, brush size and flow are
-buttons; washes, intensity and the sink/surface toggle are reachable from the
-composition list. A mode switch turns drawing off entirely for anyone who does
-not want it.
+**Before:** date, heading, an unlabelled quote, a large globe, an empty orb, two
+actions, a monthly count, navigation. The eye had nowhere to land.
 
-**The writing prompt does not exist until the orb has colour.** The flow never
-opens onto an empty form, and a complete entry is one tap on a pigment plus one
-tap to save.
+**After, in order:**
 
-**Saving is one soft haptic.** No confetti, no streak, no score.
+1. Date and a contextual greeting
+2. **Today's orb — the largest object on the screen**
+3. *How did today feel?*
+4. **Colour today** (primary) · *Write instead* (subordinate)
+5. The globe below, as context and reward — `76 days kept`
+6. At most one memory card, labelled
+
+"Shape today's orb" became **Colour today**: the metaphor now gets taught in
+onboarding, so the abstract phrase does not have to carry it. The floating quote
+is now labelled *FROM YESTERDAY* or *FROM THIS DAY LAST YEAR* — never an
+unattributed sentence that reads as a fortune cookie.
+
+Removed from home: streaks, completion rates, monthly counts as a focal point.
+
+---
+
+## Journal and entry detail
+
+Journal: three icons — search, calendar, filter. Filters open in a sheet
+(feeling, contains photos, contains voice). The chip carousel is gone. Calendar
+cells render **real mixed orbs**, not flat dots. Only named feelings appear;
+"Unnamed" never does.
+
+Entry detail reads as a finished page: date **once**, optional title, orb,
+the composition in a sentence, the reflection, then *A quiet light* and *What
+weighed on me* if they exist. Editing is a quiet **Edit this day**; delete and
+keepsake live in an overflow menu.
+
+---
+
+## Onboarding
+
+Three screens, no account, no questionnaire. Each demonstrates rather than
+explains — screen one animates a flat orb becoming layered, which *is* the
+product thesis. Then the user makes their first orb immediately.
+
+---
+
+## Retention without guilt
+
+No streaks. Nothing punishes a gap; empty days stay part of the record and any
+past day can be coloured. Return value comes from resurfacing — this day last
+year, a moment from a past month, a bright moment from a few weeks back — and
+`resurface()` returns **null** rather than inventing something to fill the slot.
+
+Insights stay hedged ("It looks like…", "You may have…"), need 14 days before
+appearing at all, and can be switched off.
+
+---
+
+## Keepsakes
+
+The orb is the shareable object, so the card is mostly orb.
+
+- **This day** — orb, date, optional composition sentence, optional words
+- **This week** — seven orbs with day initials
+- Discreet serif wordmark
+
+Privacy is explicit and defaults quiet: *Orb only* / *With feelings* / *With my
+words*. **Nothing written is included unless the user picks "With my words".**
+Export is a real PNG via `react-native-view-shot` into the iOS share sheet.
+No feed, no broadcast, no forced share after saving.
+
+---
 
 ## Accessibility
 
-- Every text colour clears **WCAG AA (4.5:1)** on both papers and both surfaces,
-  verified numerically. `inkFaint` was darkened in both themes to get there
-  (light 2.91:1 → 4.56:1; dark 3.93:1 → 4.85:1).
-- Colour is never the only signal: used pigments carry a dot, journal filters are
-  named, orbs expose a spoken composition ("40 percent calm, 30 percent hope").
-- 44pt minimum targets throughout; `MIN_TARGET` is a token.
-- Reduce Motion replaces the globe with a **static 2D grid of the same days**,
-  disables breathing, press-scale, layout animations and screen slides.
-- Dynamic Type is read live and clamped; `largeText` is exposed for layouts.
-- The orb canvas is one `adjustable` element with a hint describing every
-  gesture and a pointer to the visible controls.
+- Every text colour clears **WCAG AA (4.5:1)** on both papers, verified numerically
+- Colour is never the only signal — feelings are always named in text
+- 44pt minimum targets (`MIN_TARGET` is a token)
+- Reduce Motion: static grid instead of the globe, no breathing, no assembly, no press-scale
+- Dynamic Type read live and clamped at 1.55×
+- The orb's spoken label is its plain-English composition
+- Language is never diagnostic; observations are possibilities, and can be disabled
 
-## Performance trade-offs
+---
 
-- **Orb rendering is split in two.** `EmotionalOrb` (SVG, layered gradients and
-  stroke passes) is used where an orb is large and few; the globe draws its own
-  plain-View orbs, because a hundred SVG gradient stacks would not hold frame
-  rate. At globe scale a two- or three-colour read is all the mixture needs.
-- **Every thread is one animated path.** ~180 segments rebuilt per frame inside
-  a single worklet, rather than 180 animated `<Line>` elements with a worklet
-  each.
-- **A stroke records a point only after the finger has travelled 0.028 units**,
-  and caps at 90 points. That bounds both the React updates while drawing and
-  the path complexity afterwards.
-- **The globe is capped at 110 nodes** (`MAX_NODES`). Each node runs its own
-  projection worklet, so this is a measured ceiling, not a guess.
-- **Paper grain is 110 static specks drawn once at the root**, not per screen.
-- Reanimated worklets keep rotation, momentum and projection off the JS thread,
-  so the globe stays smooth while lists scroll.
+## Performance
 
-## Files
+- **Two orb renderers.** SVG with layered gradients where orbs are large and
+  few; plain Views on the globe. A hundred gradient stacks will not hold frame
+  rate. `detail="simple"` skips flecks, marbling and haze for small instances.
+- **110 node ceiling**, then month aggregation — measured, not guessed.
+- **Shared projection worklet.** `globeMath.project` carries `'worklet'` and is
+  verified in the built bundle to compile as `_worklet_..._init_data`.
+- Paper grain is 110 static specks drawn once at the root.
 
-**Added** — `src/components/globeMath.ts` (testable projection + lattice),
-`src/design/tokens.ts`, `src/design/theme.tsx`,
-`src/emotions/palette.ts`, `src/store/orb.ts`, `src/insights/observe.ts`,
-`src/components/{EmotionalOrb,OrbPainter,OrbGlobe,Primitives,Paper,BottomNavigation,JournalEntryRow}.tsx`,
-`app/compose-orb.tsx`, `app/(tabs)/settings.tsx`.
+---
 
-**Removed** — `src/theme/index.ts`, `src/emotions/catalog.ts`,
-`src/components/{Clay,EmotionDial,EmotionGlobe,EntryCard,Orb,Screen,TabBar}.tsx`,
-`app/(tabs)/{calendar,profile}.tsx`, `app/{check-in,compose}.tsx`,
-`app/entry/[id].tsx`.
+## Not built
 
-**Rewritten** — every remaining screen, plus `Capture.tsx`, `VoiceRecorder.tsx`,
-`store/{types,seed,DiaryProvider}.ts(x)`.
+Named honestly rather than implied:
+
+- Scheduled notifications, biometric lock
+- Deep links, invite-to-colour, shared constellations
+- Animated video export (the still keepsakes are real; the Reel is not)
+- Analytics instrumentation
+- Cloud backup — everything is local-only today
+
+---
 
 ## Verification
 
 - `tsc --noEmit` clean
-- 32 assertions over globe geometry, the assembly animation, the thread lattice
-  and the stroke model — including one per rotation direction, checked against
-  the live gesture handlers so the inversion cannot come back
-- 28 assertions over composition, migration, placement and insights
+- 33 assertions: composition and placement weighting, the spoken sentence,
+  migration from **both** earlier data shapes, every layout size, spiral
+  direction, projection sign convention, and resurfacing honesty
 - Contrast checked numerically across both themes
-- Production export and dev bundle both build (1,735 modules)
+- Production export and dev bundle both build; bundle checked for new modules
+  present and removed ones absent

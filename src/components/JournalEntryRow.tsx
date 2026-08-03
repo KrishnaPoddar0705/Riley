@@ -7,32 +7,34 @@ import { useTheme } from '@/design/theme';
 import { radius, space } from '@/design/tokens';
 import type { EmotionKey } from '@/emotions/palette';
 import type { Orb } from '@/store/orb';
-import { composition, isBlank } from '@/store/orb';
-import type { Entry } from '@/store/types';
+import { composition, describeOrb, isBlank } from '@/store/orb';
+import type { DayNote, Entry } from '@/store/types';
 import type { DayKey } from '@/utils/date';
-import { fromDayKey, relativeDay } from '@/utils/date';
+import { formatTime, fromDayKey, relativeDay } from '@/utils/date';
 import { EmotionalOrb } from './EmotionalOrb';
 
 type Props = {
   day: DayKey;
   orb: Orb | null;
-  note: string;
+  note: DayNote;
   entries: Entry[];
   nameOf: (k: EmotionKey) => string;
   onPress: () => void;
 };
 
 /**
- * One day in the timeline: its orb, the date, and the first line of whatever
- * was written. Everything else waits until the day is opened.
+ * One day in the timeline. Orb, date, and the first line of whatever was
+ * written — plus exactly one contextual detail, never a row of badges.
  */
 export const JournalEntryRow = ({ day, orb, note, entries, nameOf, onPress }: Props) => {
   const { c, t } = useTheme();
 
-  const parts = orb && !isBlank(orb) ? composition(orb).slice(0, 2) : [];
+  const blank = isBlank(orb);
+  // Only named feelings appear. "Unnamed" would read as missing data.
+  const feelings = blank ? [] : composition(orb!).slice(0, 2).map((p) => nameOf(p.emotion));
   const photo = entries.flatMap((e) => e.attachments).find((a) => a.kind === 'photo');
-  const hasVoice = entries.some((e) => e.attachments.some((a) => a.kind === 'voice'));
-  const line = note.trim() || entries.find((e) => e.text.trim())?.text.trim() || '';
+  const voice = entries.find((e) => e.attachments.some((a) => a.kind === 'voice'));
+  const line = note.text || note.bright || entries.find((e) => e.text.trim())?.text || '';
   const weekday = fromDayKey(day).toLocaleDateString(undefined, { weekday: 'long' });
 
   return (
@@ -41,13 +43,13 @@ export const JournalEntryRow = ({ day, orb, note, entries, nameOf, onPress }: Pr
       accessibilityRole="button"
       accessibilityLabel={
         `${relativeDay(day)}. ` +
-        (parts.length ? `${parts.map((p) => nameOf(p.emotion)).join(' and ')}. ` : 'No orb. ') +
-        (line ? line : 'No words.')
+        (blank ? 'Not coloured. ' : `${describeOrb(orb!, nameOf)} `) +
+        (line || 'No words.')
       }
       style={styles.row}
     >
       <View style={styles.orbCol}>
-        <EmotionalOrb orb={orb} size={40} glow={false} placeholder={isBlank(orb)} />
+        <EmotionalOrb orb={orb} size={42} glow={false} placeholder={blank} />
       </View>
 
       <View style={styles.body}>
@@ -56,9 +58,11 @@ export const JournalEntryRow = ({ day, orb, note, entries, nameOf, onPress }: Pr
           <Text style={t('caption', { color: c.inkFaint })}>{weekday}</Text>
         </View>
 
-        {parts.length ? (
+        {note.title ? <Text style={t('body', { color: c.ink })}>{note.title}</Text> : null}
+
+        {feelings.length ? (
           <Text style={t('caption', { color: c.inkSoft })} numberOfLines={1}>
-            {parts.map((p) => nameOf(p.emotion)).join(' · ')}
+            {feelings.join(' · ')}
           </Text>
         ) : null}
 
@@ -68,11 +72,16 @@ export const JournalEntryRow = ({ day, orb, note, entries, nameOf, onPress }: Pr
           </Text>
         ) : null}
 
-        {hasVoice ? (
-          <View style={styles.badge}>
+        {/* One detail only: a voice note, or the time it was kept. */}
+        {voice ? (
+          <View style={styles.detail}>
             <Ionicons name="mic-outline" size={13} color={c.inkFaint} />
             <Text style={t('caption', { color: c.inkFaint })}>Voice note</Text>
           </View>
+        ) : entries.length ? (
+          <Text style={t('caption', { color: c.inkFaint })}>
+            Kept at {formatTime(entries[0].createdAt)}
+          </Text>
         ) : null}
       </View>
 
@@ -84,14 +93,10 @@ export const JournalEntryRow = ({ day, orb, note, entries, nameOf, onPress }: Pr
 };
 
 const styles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    gap: space.md,
-    paddingVertical: space.lg,
-  },
-  orbCol: { width: 40, paddingTop: 2 },
+  row: { flexDirection: 'row', gap: space.md, paddingVertical: space.lg },
+  orbCol: { width: 42, paddingTop: 2 },
   body: { flex: 1, gap: 3 },
   head: { flexDirection: 'row', alignItems: 'baseline', gap: space.sm },
-  badge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
+  detail: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   thumb: { width: 52, height: 52, borderRadius: radius.sm },
 });

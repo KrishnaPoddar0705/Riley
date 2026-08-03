@@ -2,8 +2,10 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useMemo } from 'react';
 import { Alert, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
+import { useRouter } from 'expo-router';
+
 import { Paper } from '@/components/Paper';
-import { DateHeader, Rule } from '@/components/Primitives';
+import { DateHeader, Rule, TextAction } from '@/components/Primitives';
 import { useTheme } from '@/design/theme';
 import { MIN_TARGET, space } from '@/design/tokens';
 import { EMOTIONS, EmotionKey } from '@/emotions/palette';
@@ -16,6 +18,7 @@ import { useDiary } from '@/store/DiaryProvider';
  */
 export default function SettingsScreen() {
   const { c, t } = useTheme();
+  const router = useRouter();
   const {
     loggedDays,
     entries,
@@ -26,6 +29,7 @@ export default function SettingsScreen() {
     renameEmotion,
     updateSettings,
     resetAll,
+    clearEverything,
   } = useDiary();
 
   const insights = useMemo(
@@ -58,7 +62,8 @@ export default function SettingsScreen() {
   const confirmReset = () =>
     Alert.alert('Start over?', 'This clears every orb and everything you have written.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Erase', style: 'destructive', onPress: () => resetAll() },
+      { text: 'Erase', style: 'destructive', onPress: () => clearEverything() },
+      { text: 'Refill with sample days', onPress: () => resetAll() },
     ]);
 
   return (
@@ -69,11 +74,13 @@ export default function SettingsScreen() {
         {/* Quiet record. Two lines, no cards, no charts. */}
         <View style={styles.record}>
           <Text style={t('body', { color: c.inkSoft })}>
-            {loggedDays.length} {loggedDays.length === 1 ? 'orb' : 'orbs'} shaped
+            {loggedDays.length} {loggedDays.length === 1 ? 'day' : 'days'} kept
           </Text>
-          <Text style={t('body', { color: c.inkSoft })}>
-            {entries.length} {entries.length === 1 ? 'thing' : 'things'} kept
-          </Text>
+          {entries.length ? (
+            <Text style={t('body', { color: c.inkSoft })}>
+              {entries.length} {entries.length === 1 ? 'attachment' : 'attachments'}
+            </Text>
+          ) : null}
         </View>
 
         <Section title="Noticing" />
@@ -128,10 +135,17 @@ export default function SettingsScreen() {
           ))}
         </View>
 
+        <Section title="Keepsakes" />
+        <TextAction
+          label="Make a keepsake from today"
+          onPress={() => router.push('/keepsake')}
+        />
+
         <Section title="Data" />
         <Text style={[t('caption', { color: c.inkFaint }), styles.note]}>
           Everything stays on this phone. Nothing is uploaded.
         </Text>
+        <TextAction label="See the opening again" onPress={() => router.push('/onboarding')} />
         <Pressable
           onPress={confirmReset}
           accessibilityRole="button"

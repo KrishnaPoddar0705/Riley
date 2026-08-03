@@ -1,11 +1,11 @@
-import { EMOTIONS, EmotionKey } from '@/emotions/palette';
+import { EmotionKey } from '@/emotions/palette';
 import { lastDays, shiftDays, todayKey } from '@/utils/date';
 import { hashUnit, makeId } from '@/utils/id';
-import { BRUSH_FLOWS, BRUSH_SIZES, makeStop, makeStroke, Orb, OrbStroke } from './orb';
-import type { DiaryState, Entry } from './types';
+import { Feeling, Orb, Placement } from './orb';
+import type { DayNote, DiaryState, Entry } from './types';
 
 /**
- * Days that read like someone's actual life rather than a demo: mixed feelings,
+ * Days that read like somebody's actual life: mixed feelings, contradictions,
  * gaps where nothing was written, and only occasional media.
  */
 const REFLECTIONS = [
@@ -21,27 +21,40 @@ const REFLECTIONS = [
   'Quiet day. Nothing to report, which is its own kind of report.',
 ];
 
-/** Feelings that genuinely turn up together. */
-const PAIRS: [EmotionKey, EmotionKey][] = [
-  ['calm', 'gratitude'],
-  ['joy', 'love'],
-  ['confidence', 'anxiety'],
-  ['hope', 'longing'],
-  ['fatigue', 'calm'],
-  ['curiosity', 'joy'],
-  ['sadness', 'love'],
-  ['anger', 'anxiety'],
-  ['gratitude', 'hope'],
-  ['longing', 'sadness'],
+const BRIGHT = [
+  'The first coffee, before anyone needed anything.',
+  'A dog on the train, entirely delighted to be there.',
+  'Someone held a door and meant it.',
+  'Ten minutes of sun on the back step.',
+];
+
+const DIFFICULT = [
+  'The conversation I keep not having.',
+  'Too many open loops and no way to close any of them.',
+  'Tired in a way sleep does not fix.',
+];
+
+/** Combinations that genuinely occur — the surface and what sits under it. */
+const SHAPES: { lead: EmotionKey; under: EmotionKey; place: Placement }[] = [
+  { lead: 'joy', under: 'fatigue', place: 'core' },
+  { lead: 'confidence', under: 'anxiety', place: 'core' },
+  { lead: 'calm', under: 'sadness', place: 'core' },
+  { lead: 'gratitude', under: 'longing', place: 'edge' },
+  { lead: 'hope', under: 'anxiety', place: 'edge' },
+  { lead: 'fatigue', under: 'joy', place: 'moment' },
+  { lead: 'sadness', under: 'love', place: 'core' },
+  { lead: 'curiosity', under: 'joy', place: 'moment' },
+  { lead: 'love', under: 'longing', place: 'core' },
+  { lead: 'anxiety', under: 'hope', place: 'moment' },
 ];
 
 export const buildSeed = (): DiaryState => {
   const days = lastDays(84);
   const orbs: Record<string, Orb> = {};
-  const notes: Record<string, string> = {};
+  const dayNotes: Record<string, DayNote> = {};
   const entries: Entry[] = [];
 
-  days.forEach((day, i) => {
+  days.forEach((day) => {
     const r = hashUnit(day);
     const r2 = hashUnit(`${day}:b`);
     const r3 = hashUnit(`${day}:c`);
@@ -49,60 +62,51 @@ export const buildSeed = (): DiaryState => {
     // Roughly one day in six goes unrecorded. Life is like that.
     if (r > 0.83) return;
 
-    const [a, b] = PAIRS[Math.floor(r2 * PAIRS.length) % PAIRS.length];
-    const stops = [
-      makeStop(a, (r - 0.5) * 0.5, (r3 - 0.5) * 0.5, {
-        weight: 0.5 + r2 * 0.4,
-        spread: 0.7 + r * 0.25,
-      }),
+    const shape = SHAPES[Math.floor(r2 * SHAPES.length) % SHAPES.length];
+
+    const feelings: Feeling[] = [
+      {
+        id: makeId('f'),
+        emotion: shape.lead,
+        place: 'surface',
+        presence: 0.55 + r * 0.4,
+        seed: hashUnit(`${day}:lead`),
+      },
+      {
+        id: makeId('f'),
+        emotion: shape.under,
+        place: shape.place,
+        presence: 0.24 + r3 * 0.45,
+        seed: hashUnit(`${day}:under`),
+      },
     ];
 
-    if (r3 > 0.3) {
-      const angle = r * Math.PI * 2;
-      stops.push(
-        makeStop(b, Math.cos(angle) * 0.5, Math.sin(angle) * 0.5, {
-          weight: 0.28 + r3 * 0.32,
-          spread: 0.35 + r2 * 0.3,
-        })
-      );
-    }
-
-    // Now and then a day has a darker centre under a lighter surface.
-    if (r2 > 0.78) {
-      const third = EMOTIONS[Math.floor(r3 * EMOTIONS.length) % EMOTIONS.length].key;
-      stops.push(makeStop(third, 0, 0, { weight: 0.42, spread: 0.34, depth: true }));
-    }
-
-    // Some days were painted rather than just washed — an arc of colour drawn
-    // across the face, which is what the canvas is for.
-    const strokes: OrbStroke[] = [];
-    if (r2 > 0.55) {
-      const a0 = r * Math.PI * 2;
-      const arc = 1.1 + r3 * 1.4;
-      const rad = 0.35 + r3 * 0.4;
-      const pts = Array.from({ length: 5 }, (_, n) => {
-        const th = a0 + (arc * n) / 4;
-        return { x: Math.cos(th) * rad, y: Math.sin(th) * rad };
-      });
-      strokes.push({
-        ...makeStroke(
-          b,
-          r3 > 0.72 ? 'airbrush' : 'brush',
-          BRUSH_SIZES[r > 0.5 ? 1 : 0],
-          BRUSH_FLOWS[r2 > 0.8 ? 2 : 1],
-          pts[0]
-        ),
-        pts,
+    // Now and then a third thing flickers through.
+    if (r3 > 0.72) {
+      feelings.push({
+        id: makeId('f'),
+        emotion: SHAPES[Math.floor(r * SHAPES.length) % SHAPES.length].lead,
+        place: 'moment',
+        presence: 0.26,
+        seed: hashUnit(`${day}:flick`),
       });
     }
 
-    orbs[day] = { day, stops, strokes, updatedAt: new Date(`${day}T21:10:00`).toISOString() };
+    orbs[day] = {
+      day,
+      feelings,
+      // Some days simply do not resolve.
+      clarity: r2 > 0.76 ? 0.22 : 0.62 + r * 0.3,
+      updatedAt: new Date(`${day}T21:10:00`).toISOString(),
+    };
 
-    if (r3 > 0.34) {
-      notes[day] = REFLECTIONS[Math.floor(r * REFLECTIONS.length) % REFLECTIONS.length];
-    }
+    const note: DayNote = {};
+    if (r3 > 0.34) note.text = REFLECTIONS[Math.floor(r * REFLECTIONS.length) % REFLECTIONS.length];
+    if (r2 > 0.7) note.bright = BRIGHT[Math.floor(r3 * BRIGHT.length) % BRIGHT.length];
+    if (r > 0.68) note.difficult = DIFFICULT[Math.floor(r2 * DIFFICULT.length) % DIFFICULT.length];
+    if (Object.keys(note).length) dayNotes[day] = note;
 
-    if (r2 > 0.88) {
+    if (r2 > 0.9) {
       entries.push({
         id: makeId('e'),
         day,
@@ -117,7 +121,7 @@ export const buildSeed = (): DiaryState => {
             title: 'Lights and Shadows',
           },
         ],
-        tags: ['saved'],
+        tags: [],
       });
     }
   });
@@ -138,7 +142,7 @@ export const buildSeed = (): DiaryState => {
     entries: entries.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
     orbs,
     moods: {},
-    notes,
-    settings: { renames: {}, insights: true },
+    days: dayNotes,
+    settings: { renames: {}, insights: true, onboarded: true },
   };
 };
