@@ -1,0 +1,66 @@
+{
+  "expo": {
+    "name": "Riley",
+    "slug": "riley",
+    "scheme": "riley",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F4F1F9"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.riley.diary",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Riley uses the microphone so you can save voice notes to your diary.",
+        "NSPhotoLibraryUsageDescription": "Riley needs photo access so you can attach photos and videos to a memory.",
+        "NSCameraUsageDescription": "Riley uses the camera so you can capture a moment straight into your diary."
+      }
+    },
+    "android": {
+      "package": "com.riley.diary",
+      "adaptiveIcon": {
+        "backgroundColor": "#F4F1F9",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Riley needs photo access so you can attach photos and videos to a memory.",
+          "cameraPermission": "Riley uses the camera so you can capture a moment straight into your diary."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Riley uses the microphone so you can save voice notes to your diary."
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#F4F1F9"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
