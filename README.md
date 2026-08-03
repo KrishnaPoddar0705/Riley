@@ -4,7 +4,7 @@ An emotion diary and second brain for iPhone. Name it after the girl from *Insid
 Out*, because that is the idea: every day becomes a coloured orb, and all your
 orbs together make a globe you can spin.
 
-Built with Expo (SDK 57) + React Native + expo-router, TypeScript throughout.
+Built with Expo (SDK 54) + React Native + expo-router, TypeScript throughout.
 
 ---
 
@@ -28,27 +28,31 @@ npx eas build -p ios      # cloud build
 
 ### About the pinned versions
 
-**`expo` and `react-native` are pinned to exact versions on purpose** — `57.0.7`
-and `0.86.0` — and neither should be bumped casually.
+**`expo` and `react-native` are pinned to exact versions on purpose** — `54.0.36`
+and `0.81.5` — and neither should be bumped casually.
 
-Expo Go is a prebuilt binary: you cannot rebuild its native side. React Native
-compares the JS bundle's version against the native one at startup and hard-fails
-when the **minor** versions differ:
+The whole project is targeted at **SDK 54**, because that is the SDK the Expo Go
+on the target phone supports. Expo Go is a prebuilt binary; its native side
+cannot be rebuilt, so the JS has to meet it, not the other way round.
 
-```
-React Native version mismatch.
-JavaScript version: 0.85.3
-Native version: 0.86.0
-```
+Two different failures come from getting this wrong, and they point in opposite
+directions:
 
-The Expo Go client currently ships native RN `0.86.0`, which is SDK 57. SDK 56
-pins `0.85.3` across every patch, so a 56 project loads and then dies on that
-check. `expo@57.0.9` would also work (RN `0.86.2`, same minor), but `57.0.7`
-matches the client's native version exactly, which is the safer side to be on.
+| What you see | Meaning | Fix |
+|---|---|---|
+| *"Project is incompatible with this version of Expo Go"* | project SDK is **newer** than the client | pin **down** |
+| `React Native version mismatch. JavaScript version: X / Native version: Y` | SDK loaded, but RN **minor** differs | match RN to `Y` |
 
-If Expo Go ever refuses the project with *"requires a newer version of Expo Go"*,
-that is the opposite failure — the client is behind the SDK, and the pins need to
-move **down** to whatever SDK that Expo Go build runs.
+React Native's startup check compares only major and minor, so `0.81.5` against a
+native `0.81.x` is fine; `0.85` against `0.86` is not.
+
+To find the right target: Expo Go's home screen states the SDK version it
+supports, and the `Native version:` number in a mismatch error identifies the
+client's RN exactly. Those two are the ground truth — not npm's `latest`.
+
+Because SDK 54 predates Expo's unified versioning, its packages use independent
+version lines (`expo-audio@1.x`, `expo-video@3.x`, `expo-blur@15.x`). Do not
+"correct" these to match the `expo` major.
 
 `react-dom` is pinned to `19.2.3` to match `react` exactly. It is not used by the
 iOS app, but `expo-router` depends on `vaul` and `@radix-ui/*` for its web build,
