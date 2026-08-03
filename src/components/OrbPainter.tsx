@@ -3,13 +3,24 @@ import * as Haptics from 'expo-haptics';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { FadeIn, FadeOut, LinearTransition, runOnJS, useSharedValue } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeOut, LinearTransition, runOnJS } from 'react-native-reanimated';
 
 import { useTheme } from '@/design/theme';
 import { MIN_TARGET, radius, space } from '@/design/tokens';
 import { EMOTIONS, EmotionKey, emotionColor } from '@/emotions/palette';
-import type { Orb, OrbStop } from '@/store/orb';
-import { composition, MAX_STOPS, makeStop, nextPlacement } from '@/store/orb';
+import type { BrushKind, Orb, OrbStroke } from '@/store/orb';
+import {
+  BRUSH_FLOWS,
+  BRUSH_SIZES,
+  composition,
+  MAX_POINTS,
+  MAX_STOPS,
+  MAX_STROKES,
+  makeStop,
+  makeStroke,
+  nextPlacement,
+  strokesOf,
+} from '@/store/orb';
 import { clamp } from '@/utils/id';
 import { EmotionalOrb } from './EmotionalOrb';
 import { IconButton, NeumorphicControl } from './Primitives';
@@ -19,42 +30,59 @@ type Props = {
   onChange: (next: Orb) => void;
   size: number;
   nameOf: (key: EmotionKey) => string;
-  /** Selected pigment. Lifted so the parent can show its name alongside. */
   active: EmotionKey;
   onActiveChange: (k: EmotionKey) => void;
 };
 
+const TOOLS: { kind: BrushKind; icon: keyof typeof Ionicons.glyphMap; label: string }[] = [
+  { kind: 'brush', icon: 'brush-outline', label: 'Brush' },
+  { kind: 'airbrush', icon: 'cloud-outline', label: 'Airbrush' },
+  { kind: 'eraser', icon: 'backspace-outline', label: 'Eraser' },
+];
+
+/** Only record a point once the finger has actually travelled. */
+const MIN_STEP = 0.028;
+
 /**
- * Where the day gets made.
+ * The canvas.
  *
- * Touching the face drops the selected pigment where you touched; dragging
- * moves it; holding deepens it. Everything the gestures do is also reachable
- * from the visible controls underneath, so nothing here is gesture-only.
+ * Drawing on the face lays down a mark you can see building under the finger.
+ * The brush carries colour, the airbrush shades in soft passes you can build up
+ * a layer at a time, and the eraser takes paint back off. Everything the
+ * gestures do is also reachable from the controls underneath.
  */
 export const OrbPainter = ({ orb, onChange, size, nameOf, active, onActiveChange }: Props) => {
   const { c, t, reduceMotion } = useTheme();
+
   const [history, setHistory] = useState<Orb[]>([]);
   const [future, setFuture] = useState<Orb[]>([]);
+  const [tool, setTool] = useState<BrushKind>('brush');
+  const [sizeIdx, setSizeIdx] = useState(1);
+  const [flowIdx, setFlowIdx] = useState(1);
   const [listMode, setListMode] = useState(false);
-  const draggingId = useRef<string | null>(null);
+
+  /** The mark currently under the finger. Kept out of the orb until released. */
+  const [live, setLive] = useState<OrbStroke | null>(null);
+  const liveRef = useRef<OrbStroke | null>(null);
+
+  const remember = useCallback(() => {
+    setHistory((h) => [...h.slice(-24), orb]);
+    setFuture([]);
+  }, [orb]);
 
   const commit = useCallback(
-    (next: Orb, remember = true) => {
-      if (remember) {
-        setHistory((h) => [...h.slice(-24), orb]);
-        setFuture([]);
-      }
+    (next: Orb) => {
+      remember();
       onChange(next);
     },
-    [orb, onChange]
+    [remember, onChange]
   );
 
   const undo = () => {
     setHistory((h) => {
       if (!h.length) return h;
-      const prev = h[h.length - 1];
       setFuture((f) => [orb, ...f].slice(0, 24));
-      onChange(prev);
+      onChange(h[h.length - 1]);
       Haptics.selectionAsync().catch(() => {});
       return h.slice(0, -1);
     });
@@ -71,179 +99,87 @@ export const OrbPainter = ({ orb, onChange, size, nameOf, active, onActiveChange
   };
 
   const reset = () => {
-    if (!orb.stops.length) return;
+    if (!orb.stops.length && !strokesOf(orb).length) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-    commit({ ...orb, stops: [] });
+    commit({ ...orb, stops: [], strokes: [] });
   };
 
-  /** Nearest existing stop to a touch, if it is close enough to mean it. */
-  const stopNear = useCallback(
-    (x: number, y: number) => {
-      let best: OrbStop | null = null;
-      let bestD = 0.34;
-      for (const s of orb.stops) {
-        const d = Math.hypot(s.x - x, s.y - y);
-        if (d < bestD) {
-          bestD = d;
-          best = s;
-        }
-      }
-      return best;
-    },
-    [orb.stops]
-  );
+  /* ----- drawing -------------------------------------------------------- */
 
-  const placeAt = useCallback(
+  const beginStroke = useCallback(
     (x: number, y: number) => {
-      const near = stopNear(x, y);
-      if (near && near.emotion === active) {
-        draggingId.current = near.id;
-        return;
-      }
-      if (orb.stops.length >= MAX_STOPS) {
-        // Full: repaint the nearest stop rather than silently doing nothing.
-        if (near) {
-          draggingId.current = near.id;
-          commit({
-            ...orb,
-            stops: orb.stops.map((s) => (s.id === near.id ? { ...s, emotion: active } : s)),
-          });
-        }
-        return;
-      }
-      const stop = makeStop(active, x, y);
-      draggingId.current = stop.id;
+      if (strokesOf(orb).length >= MAX_STROKES) return;
+      const s = makeStroke(active, tool, BRUSH_SIZES[sizeIdx], BRUSH_FLOWS[flowIdx], { x, y });
+      liveRef.current = s;
+      setLive(s);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-      commit({ ...orb, stops: [...orb.stops, stop] });
     },
-    [active, orb, commit, stopNear]
+    [orb, active, tool, sizeIdx, flowIdx]
   );
 
-  const moveActive = useCallback(
-    (x: number, y: number) => {
-      const id = draggingId.current;
-      if (!id) return;
-      onChange({
-        ...orb,
-        stops: orb.stops.map((s) => (s.id === id ? { ...s, x: clamp(x, -1, 1), y: clamp(y, -1, 1) } : s)),
-      });
-    },
-    [orb, onChange]
-  );
-
-  const intensifyActive = useCallback(() => {
-    const id = draggingId.current;
-    if (!id) return;
-    onChange({
-      ...orb,
-      stops: orb.stops.map((s) =>
-        s.id === id ? { ...s, weight: clamp(s.weight + 0.06, 0.12, 1) } : s
-      ),
-    });
-  }, [orb, onChange]);
-
-  const endStroke = useCallback(() => {
-    draggingId.current = null;
+  const extendStroke = useCallback((x: number, y: number) => {
+    const s = liveRef.current;
+    if (!s) return;
+    const last = s.pts[s.pts.length - 1];
+    if (Math.hypot(x - last.x, y - last.y) < MIN_STEP) return;
+    if (s.pts.length >= MAX_POINTS) return;
+    const next = { ...s, pts: [...s.pts, { x, y }] };
+    liveRef.current = next;
+    setLive(next);
   }, []);
 
-  /* ----- gestures ------------------------------------------------------- */
+  const endStroke = useCallback(() => {
+    const s = liveRef.current;
+    liveRef.current = null;
+    setLive(null);
+    if (!s) return;
+    remember();
+    onChange({ ...orb, strokes: [...strokesOf(orb), s] });
+  }, [orb, onChange, remember]);
 
   const half = size / 2;
 
-  const holdTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const startHold = useCallback(() => {
-    if (holdTimer.current) return;
-    holdTimer.current = setInterval(() => {
-      intensifyActive();
-      Haptics.selectionAsync().catch(() => {});
-    }, 160);
-  }, [intensifyActive]);
-  const stopHold = useCallback(() => {
-    if (holdTimer.current) clearInterval(holdTimer.current);
-    holdTimer.current = null;
-  }, []);
-
-  const pan = useMemo(
+  const draw = useMemo(
     () =>
       Gesture.Pan()
         .enabled(!listMode)
         .minDistance(0)
+        .maxPointers(1)
         .onBegin((e) => {
           'worklet';
           let x = (e.x - half) / half;
           let y = (e.y - half) / half;
           const d = Math.sqrt(x * x + y * y);
-          // Clamp to the face so pigment never lands outside the sphere.
-          if (d > 0.94) {
-            x = (x / d) * 0.94;
-            y = (y / d) * 0.94;
+          // Keep pigment on the face.
+          if (d > 0.95) {
+            x = (x / d) * 0.95;
+            y = (y / d) * 0.95;
           }
-          runOnJS(placeAt)(x, y);
+          runOnJS(beginStroke)(x, y);
         })
         .onChange((e) => {
           'worklet';
           let x = (e.x - half) / half;
           let y = (e.y - half) / half;
           const d = Math.sqrt(x * x + y * y);
-          if (d > 0.94) {
-            x = (x / d) * 0.94;
-            y = (y / d) * 0.94;
+          if (d > 0.95) {
+            x = (x / d) * 0.95;
+            y = (y / d) * 0.95;
           }
-          runOnJS(moveActive)(x, y);
+          runOnJS(extendStroke)(x, y);
         })
         .onFinalize(() => {
           'worklet';
           runOnJS(endStroke)();
-          runOnJS(stopHold)();
         }),
-    [listMode, placeAt, moveActive, endStroke, stopHold, half]
+    [listMode, half, beginStroke, extendStroke, endStroke]
   );
 
-  const hold = useMemo(
-    () =>
-      Gesture.LongPress()
-        .enabled(!listMode)
-        .minDuration(280)
-        .onStart(() => {
-          'worklet';
-          runOnJS(startHold)();
-        })
-        .onFinalize(() => {
-          'worklet';
-          runOnJS(stopHold)();
-        }),
-    [listMode, startHold, stopHold]
-  );
-
-  const pinch = useMemo(
-    () =>
-      Gesture.Pinch()
-        .enabled(!listMode)
-        .onChange((e) => {
-          'worklet';
-          runOnJS(spreadBy)(e.scaleChange);
-        }),
-    [listMode]
-  );
-
-  function spreadBy(scaleChange: number) {
-    const id = draggingId.current ?? orb.stops[orb.stops.length - 1]?.id;
-    if (!id) return;
-    onChange({
-      ...orb,
-      stops: orb.stops.map((s) =>
-        s.id === id ? { ...s, spread: clamp(s.spread * scaleChange, 0.25, 1) } : s
-      ),
-    });
-  }
-
-  const gesture = useMemo(() => Gesture.Simultaneous(pan, hold, pinch), [pan, hold, pinch]);
-
-  /* ----- stepper controls (the non-gesture path) ------------------------ */
+  /* ----- washes, via the visible controls -------------------------------- */
 
   const parts = useMemo(() => composition(orb), [orb]);
 
-  const addStop = (key: EmotionKey) => {
+  const addWash = (key: EmotionKey) => {
     if (orb.stops.length >= MAX_STOPS) return;
     const p = nextPlacement(orb, `${orb.day}:${key}`);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -252,15 +188,26 @@ export const OrbPainter = ({ orb, onChange, size, nameOf, active, onActiveChange
 
   const adjust = (key: EmotionKey, delta: number) => {
     Haptics.selectionAsync().catch(() => {});
-    const touched = orb.stops.filter((s) => s.emotion === key);
-    if (!touched.length) {
-      if (delta > 0) addStop(key);
+    const hasWash = orb.stops.some((s) => s.emotion === key);
+    if (!hasWash) {
+      if (delta > 0) addWash(key);
+      else {
+        // Only strokes of this colour: lighten them instead.
+        commit({
+          ...orb,
+          strokes: strokesOf(orb)
+            .map((s) => (s.emotion === key ? { ...s, flow: clamp(s.flow - 0.2, 0, 1) } : s))
+            .filter((s) => s.flow > 0.05),
+        });
+      }
       return;
     }
-    const next = orb.stops
-      .map((s) => (s.emotion === key ? { ...s, weight: clamp(s.weight + delta, 0, 1) } : s))
-      .filter((s) => s.weight > 0.05);
-    commit({ ...orb, stops: next });
+    commit({
+      ...orb,
+      stops: orb.stops
+        .map((s) => (s.emotion === key ? { ...s, weight: clamp(s.weight + delta, 0, 1) } : s))
+        .filter((s) => s.weight > 0.05),
+    });
   };
 
   const toggleDepth = (key: EmotionKey) => {
@@ -271,43 +218,149 @@ export const OrbPainter = ({ orb, onChange, size, nameOf, active, onActiveChange
     });
   };
 
+  const canUndo = history.length > 0;
+  const canRedo = future.length > 0;
+  const dirty = orb.stops.length > 0 || strokesOf(orb).length > 0;
+
   return (
     <View>
-      {/* The canvas */}
       <View style={styles.stage}>
-        <GestureDetector gesture={gesture}>
+        <GestureDetector gesture={draw}>
           <View
             accessible
             accessibilityRole="adjustable"
-            accessibilityLabel="Today's orb canvas"
-            accessibilityHint="Touch to place the selected colour. Drag to move it. Hold to deepen it. All of this is also available from the controls below."
+            accessibilityLabel="Orb canvas"
+            accessibilityHint="Draw on the orb to paint with the selected colour. Every tool is also available from the controls below."
             style={{ width: size, height: size }}
           >
-            <EmotionalOrb orb={orb} size={size} placeholder={!orb.stops.length} breathing={!orb.stops.length} />
+            <EmotionalOrb
+              orb={orb}
+              live={live}
+              size={size}
+              placeholder={!dirty && !live}
+              breathing={!dirty && !live}
+            />
           </View>
         </GestureDetector>
       </View>
 
-      {/* Undo / redo / reset / input mode */}
+      {/* Tools */}
       <View style={styles.toolRow}>
-        <IconButton label="Undo" onPress={undo} style={{ opacity: history.length ? 1 : 0.3 }}>
-          <Ionicons name="arrow-undo-outline" size={19} color={c.inkSoft} />
-        </IconButton>
-        <IconButton label="Redo" onPress={redo} style={{ opacity: future.length ? 1 : 0.3 }}>
-          <Ionicons name="arrow-redo-outline" size={19} color={c.inkSoft} />
-        </IconButton>
-        <IconButton label="Clear the orb" onPress={reset} style={{ opacity: orb.stops.length ? 1 : 0.3 }}>
-          <Ionicons name="refresh-outline" size={19} color={c.inkSoft} />
-        </IconButton>
+        {TOOLS.map((tl) => {
+          const on = tool === tl.kind && !listMode;
+          return (
+            <Pressable
+              key={tl.kind}
+              onPress={() => {
+                setTool(tl.kind);
+                setListMode(false);
+                Haptics.selectionAsync().catch(() => {});
+              }}
+              accessibilityRole="button"
+              accessibilityState={{ selected: on }}
+              accessibilityLabel={tl.label}
+              style={[
+                styles.tool,
+                { borderColor: on ? c.ink : 'transparent', backgroundColor: on ? c.accentSoft : 'transparent' },
+              ]}
+            >
+              <Ionicons name={tl.icon} size={17} color={on ? c.ink : c.inkFaint} />
+              <Text style={t('caption', { color: on ? c.ink : c.inkFaint })}>{tl.label}</Text>
+            </Pressable>
+          );
+        })}
+
         <View style={{ flex: 1 }} />
+
+        <IconButton label="Undo" onPress={undo} style={{ opacity: canUndo ? 1 : 0.28 }}>
+          <Ionicons name="arrow-undo-outline" size={18} color={c.inkSoft} />
+        </IconButton>
+        <IconButton label="Redo" onPress={redo} style={{ opacity: canRedo ? 1 : 0.28 }}>
+          <Ionicons name="arrow-redo-outline" size={18} color={c.inkSoft} />
+        </IconButton>
+        <IconButton label="Clear the orb" onPress={reset} style={{ opacity: dirty ? 1 : 0.28 }}>
+          <Ionicons name="refresh-outline" size={18} color={c.inkSoft} />
+        </IconButton>
+      </View>
+
+      {/* Brush size and flow */}
+      <View style={styles.brushRow}>
+        <View style={styles.brushGroup} accessibilityLabel="Brush size">
+          {BRUSH_SIZES.map((s, i) => {
+            const on = sizeIdx === i;
+            const d = 8 + i * 5;
+            return (
+              <Pressable
+                key={s}
+                onPress={() => {
+                  setSizeIdx(i);
+                  Haptics.selectionAsync().catch(() => {});
+                }}
+                accessibilityRole="button"
+                accessibilityState={{ selected: on }}
+                accessibilityLabel={['Fine', 'Medium', 'Broad'][i] + ' brush'}
+                style={styles.brushTap}
+              >
+                <View
+                  style={{
+                    width: d,
+                    height: d,
+                    borderRadius: d / 2,
+                    backgroundColor: on ? c.ink : c.lineStrong,
+                  }}
+                />
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <View style={[styles.divider, { backgroundColor: c.line }]} />
+
+        <View style={styles.brushGroup} accessibilityLabel="Paint flow">
+          {BRUSH_FLOWS.map((f, i) => {
+            const on = flowIdx === i;
+            return (
+              <Pressable
+                key={f}
+                onPress={() => {
+                  setFlowIdx(i);
+                  Haptics.selectionAsync().catch(() => {});
+                }}
+                accessibilityRole="button"
+                accessibilityState={{ selected: on }}
+                accessibilityLabel={['Light', 'Medium', 'Full'][i] + ' flow'}
+                style={styles.brushTap}
+              >
+                <View
+                  style={{
+                    width: 15,
+                    height: 15,
+                    borderRadius: 8,
+                    backgroundColor: emotionColor(active),
+                    opacity: f,
+                    borderWidth: on ? 1.5 : 0,
+                    borderColor: c.ink,
+                  }}
+                />
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <View style={{ flex: 1 }} />
+
         <IconButton
-          label={listMode ? 'Switch to painting' : 'Switch to controls'}
+          label={listMode ? 'Switch to drawing' : 'Switch to controls'}
           onPress={() => {
             setListMode((v) => !v);
             Haptics.selectionAsync().catch(() => {});
           }}
         >
-          <Ionicons name={listMode ? 'color-palette-outline' : 'options-outline'} size={19} color={c.inkSoft} />
+          <Ionicons
+            name={listMode ? 'brush-outline' : 'options-outline'}
+            size={18}
+            color={listMode ? c.ink : c.inkFaint}
+          />
         </IconButton>
       </View>
 
@@ -324,19 +377,25 @@ export const OrbPainter = ({ orb, onChange, size, nameOf, active, onActiveChange
             color={e.color}
             name={nameOf(e.key)}
             selected={active === e.key}
-            used={orb.stops.some((s) => s.emotion === e.key)}
+            used={
+              orb.stops.some((s) => s.emotion === e.key) ||
+              strokesOf(orb).some((s) => s.emotion === e.key && s.kind !== 'eraser')
+            }
             onPress={() => {
               onActiveChange(e.key);
               Haptics.selectionAsync().catch(() => {});
-              if (listMode) addStop(e.key);
+              if (listMode) addWash(e.key);
             }}
           />
         ))}
       </ScrollView>
 
-      {/* Composition — visible controls for everything the gestures do */}
+      {/* Composition */}
       {parts.length ? (
-        <Animated.View layout={reduceMotion ? undefined : LinearTransition.duration(240)} style={styles.mixture}>
+        <Animated.View
+          layout={reduceMotion ? undefined : LinearTransition.duration(240)}
+          style={styles.mixture}
+        >
           {parts.map((p) => {
             const isDeep = orb.stops.some((s) => s.emotion === p.emotion && s.depth);
             return (
@@ -359,7 +418,11 @@ export const OrbPainter = ({ orb, onChange, size, nameOf, active, onActiveChange
                     <Ionicons name="add" size={17} color={c.inkSoft} />
                   </IconButton>
                   <IconButton
-                    label={isDeep ? `Bring ${nameOf(p.emotion)} to the surface` : `Sink ${nameOf(p.emotion)} to the centre`}
+                    label={
+                      isDeep
+                        ? `Bring ${nameOf(p.emotion)} to the surface`
+                        : `Sink ${nameOf(p.emotion)} into the centre`
+                    }
                     onPress={() => toggleDepth(p.emotion)}
                   >
                     <Ionicons
@@ -375,7 +438,7 @@ export const OrbPainter = ({ orb, onChange, size, nameOf, active, onActiveChange
         </Animated.View>
       ) : (
         <Text style={[t('caption', { color: c.inkFaint }), styles.hint]}>
-          {listMode ? 'Choose a colour to begin.' : 'Touch the orb to leave a colour.'}
+          {listMode ? 'Choose a colour to add a wash.' : 'Draw on the orb.'}
         </Text>
       )}
     </View>
@@ -434,29 +497,37 @@ export const EmotionColourWell = ({
         />
       </NeumorphicControl>
       {/* Never colour alone: a used pigment is also marked with a dot. */}
-      <View
-        style={[
-          styles.usedDot,
-          { backgroundColor: used ? c.ink : 'transparent' },
-        ]}
-      />
+      <View style={[styles.usedDot, { backgroundColor: used ? c.ink : 'transparent' }]} />
     </Pressable>
   );
 };
 
 const styles = StyleSheet.create({
   stage: { alignItems: 'center', justifyContent: 'center' },
-  toolRow: {
+  toolRow: { flexDirection: 'row', alignItems: 'center', gap: space.xs, marginTop: space.lg },
+  tool: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.xs,
-    marginTop: space.lg,
+    gap: 5,
+    height: 34,
+    paddingHorizontal: 10,
+    borderRadius: radius.pill,
+    borderWidth: 1,
   },
+  brushRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: space.sm },
+  brushGroup: { flexDirection: 'row', alignItems: 'center' },
+  brushTap: {
+    minWidth: 34,
+    minHeight: MIN_TARGET,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  divider: { width: StyleSheet.hairlineWidth, height: 20 },
   wells: { gap: space.sm, paddingVertical: space.sm, paddingRight: space.lg },
   wellTap: { alignItems: 'center' },
   well: { alignItems: 'center', justifyContent: 'center' },
   usedDot: { width: 4, height: 4, borderRadius: 2, marginTop: 5 },
-  mixture: { marginTop: space.md },
+  mixture: { marginTop: space.sm },
   mixRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, minHeight: MIN_TARGET },
   mixDot: { width: 12, height: 12, borderRadius: 6 },
   mixName: { flex: 1 },

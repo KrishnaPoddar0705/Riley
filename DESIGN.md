@@ -38,7 +38,29 @@ Today · Globe · Journal · Settings
 The `entry/[id]` and `compose` screens went away. Everything now belongs to a
 day, so a day is the only detail view.
 
-## The orb
+## The orb is a canvas
+
+A day is painted, not configured. Two kinds of paint land on the face:
+
+- a **wash** — a soft radial bloom, the broad sense of how a day felt
+- a **stroke** — something you drew, with a direction, a width and a flow
+
+Three tools. The **brush** carries colour; the **airbrush** shades in faint
+passes you build up a layer at a time; the **eraser** takes paint back off.
+Three sizes, three flow strengths. Undo, redo and clear cover both kinds.
+
+Each mark is laid down as three concentric passes — wide and faint, then
+tighter and stronger — which is what gives a stroke a soft shoulder instead of
+the hard vector edge a single line would have. Erasing works through an SVG
+mask, so it cuts back to the bare sphere rather than painting over in
+background colour.
+
+The body underneath is deliberately pale. The first version darkened it toward
+the dominant pigment and then dropped a heavy shade over the limb, which turned
+every two-colour orb into grey-green sludge; the base now sits well above the
+paint and the limb occlusion is a third of what it was.
+
+## The data model
 
 The core model changed. A day used to be:
 
@@ -49,7 +71,10 @@ The core model changed. A day used to be:
 It is now a composition of pigments placed on a face:
 
 ```ts
-{ stops: [{ emotion, x, y, weight, spread, depth }] }
+{
+  stops:   [{ emotion, x, y, weight, spread, depth }],
+  strokes: [{ emotion, kind, pts, size, flow }],
+}
 ```
 
 Each stop paints as a translucent radial wash, back to front, so two feelings
@@ -88,17 +113,37 @@ separated by hairlines.
 
 ## Interaction decisions
 
-**The globe is still at rest.** No idle rotation and no particles. Momentum
-decays at `v * 0.06^dt`, coming to a stop in about 1.5 seconds. Pinch is
-clamped to 0.92–1.22 — a nudge closer, not a zoom control.
+**The globe turns slowly on its own** — about 0.055 rad/s, the way a held
+object does. Momentum from a flick bleeds off *into* that drift rather than to
+a dead stop, so it never lurches to a halt.
+
+**Drag right and it turns right.** This was inverted, and the sign convention
+now lives in `globeMath.ts` where it can be tested rather than eyeballed:
+increasing `spin` moves the front-facing point right, increasing `tilt` moves it
+up — so a rightward drag increases spin and a downward drag *decreases* tilt.
+There are assertions for each direction, plus assertions that the gesture
+handlers still match.
+
+**One finger turns, two fingers slide, pinch comes closer** (0.85×–2.2×, with
+the slide springing back when you zoom out).
+
+**Threads run between neighbouring orbs.** Each orb links to its two nearest
+spatial neighbours — not to the next day, which on a Fibonacci spiral would
+throw long chords across the sphere. The lattice is split into near and far
+halves at different opacities so it wraps the cluster.
+
+**The orbs assemble on arrival.** They drift in from ~2.4× radius, staggered
+along the spiral, easing over 1.7s; the threads fade in once the orbs have
+landed.
 
 **Days are laid oldest-to-newest along a Fibonacci spiral**, so the globe has a
 readable grain instead of scattered bubbles. Long ranges sample days rather than
 adding nodes, and sampling prefers a day that actually has an orb.
 
-**Every gesture has a visible equivalent.** Painting, intensifying and spreading
-are all reachable from the ± steppers and the sink/surface toggle in the
-composition list. A mode switch turns gesture painting off entirely.
+**Every gesture has a visible equivalent.** Tools, brush size and flow are
+buttons; washes, intensity and the sink/surface toggle are reachable from the
+composition list. A mode switch turns drawing off entirely for anyone who does
+not want it.
 
 **The writing prompt does not exist until the orb has colour.** The flow never
 opens onto an empty form, and a complete entry is one tap on a pigment plus one
@@ -122,10 +167,16 @@ tap to save.
 
 ## Performance trade-offs
 
-- **Orb rendering is split in two.** `EmotionalOrb` (SVG, layered gradients) is
-  used where an orb is large and few; the globe draws its own plain-View orbs,
-  because a hundred SVG gradient stacks would not hold frame rate. At globe
-  scale a two- or three-colour read is all the mixture needs.
+- **Orb rendering is split in two.** `EmotionalOrb` (SVG, layered gradients and
+  stroke passes) is used where an orb is large and few; the globe draws its own
+  plain-View orbs, because a hundred SVG gradient stacks would not hold frame
+  rate. At globe scale a two- or three-colour read is all the mixture needs.
+- **Every thread is one animated path.** ~180 segments rebuilt per frame inside
+  a single worklet, rather than 180 animated `<Line>` elements with a worklet
+  each.
+- **A stroke records a point only after the finger has travelled 0.028 units**,
+  and caps at 90 points. That bounds both the React updates while drawing and
+  the path complexity afterwards.
 - **The globe is capped at 110 nodes** (`MAX_NODES`). Each node runs its own
   projection worklet, so this is a measured ceiling, not a guess.
 - **Paper grain is 110 static specks drawn once at the root**, not per screen.
@@ -134,7 +185,8 @@ tap to save.
 
 ## Files
 
-**Added** — `src/design/tokens.ts`, `src/design/theme.tsx`,
+**Added** — `src/components/globeMath.ts` (testable projection + lattice),
+`src/design/tokens.ts`, `src/design/theme.tsx`,
 `src/emotions/palette.ts`, `src/store/orb.ts`, `src/insights/observe.ts`,
 `src/components/{EmotionalOrb,OrbPainter,OrbGlobe,Primitives,Paper,BottomNavigation,JournalEntryRow}.tsx`,
 `app/compose-orb.tsx`, `app/(tabs)/settings.tsx`.
@@ -150,6 +202,9 @@ tap to save.
 ## Verification
 
 - `tsc --noEmit` clean
-- 28 assertions over composition, migration, placement and insights — all pass
+- 32 assertions over globe geometry, the assembly animation, the thread lattice
+  and the stroke model — including one per rotation direction, checked against
+  the live gesture handlers so the inversion cannot come back
+- 28 assertions over composition, migration, placement and insights
 - Contrast checked numerically across both themes
 - Production export and dev bundle both build (1,735 modules)

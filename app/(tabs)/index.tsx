@@ -61,7 +61,6 @@ export default function TodayScreen() {
           items={items}
           size={globeSize}
           nameOf={nameOf}
-          interactive={false}
           onSelect={(day) => router.push(`/day/${day}`)}
           onInspect={(day) => router.push(`/day/${day}`)}
         />

@@ -1,7 +1,7 @@
 import { EMOTIONS, EmotionKey } from '@/emotions/palette';
 import { lastDays, shiftDays, todayKey } from '@/utils/date';
 import { hashUnit, makeId } from '@/utils/id';
-import { makeStop, Orb } from './orb';
+import { BRUSH_FLOWS, BRUSH_SIZES, makeStop, makeStroke, Orb, OrbStroke } from './orb';
 import type { DiaryState, Entry } from './types';
 
 /**
@@ -73,7 +73,30 @@ export const buildSeed = (): DiaryState => {
       stops.push(makeStop(third, 0, 0, { weight: 0.42, spread: 0.34, depth: true }));
     }
 
-    orbs[day] = { day, stops, updatedAt: new Date(`${day}T21:10:00`).toISOString() };
+    // Some days were painted rather than just washed — an arc of colour drawn
+    // across the face, which is what the canvas is for.
+    const strokes: OrbStroke[] = [];
+    if (r2 > 0.55) {
+      const a0 = r * Math.PI * 2;
+      const arc = 1.1 + r3 * 1.4;
+      const rad = 0.35 + r3 * 0.4;
+      const pts = Array.from({ length: 5 }, (_, n) => {
+        const th = a0 + (arc * n) / 4;
+        return { x: Math.cos(th) * rad, y: Math.sin(th) * rad };
+      });
+      strokes.push({
+        ...makeStroke(
+          b,
+          r3 > 0.72 ? 'airbrush' : 'brush',
+          BRUSH_SIZES[r > 0.5 ? 1 : 0],
+          BRUSH_FLOWS[r2 > 0.8 ? 2 : 1],
+          pts[0]
+        ),
+        pts,
+      });
+    }
+
+    orbs[day] = { day, stops, strokes, updatedAt: new Date(`${day}T21:10:00`).toISOString() };
 
     if (r3 > 0.34) {
       notes[day] = REFLECTIONS[Math.floor(r * REFLECTIONS.length) % REFLECTIONS.length];
