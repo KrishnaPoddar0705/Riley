@@ -33,6 +33,12 @@ npx eas build -p ios      # cloud build
 
 ### About the pinned versions
 
+`react-dom` is pinned to `19.2.3` to match `react` exactly. It is not used by the
+iOS app, but `expo-router` depends on `vaul` and `@radix-ui/*` for its web build,
+and those declare a `react-dom` peer. Left unpinned, npm resolves `react-dom` to
+the newest release, which then demands a newer `react` than the SDK pins — and
+npm 11+ fails the whole install with `ERESOLVE`.
+
 `expo-audio` declares an unbounded `expo-asset@"*"` peer, so a lockfile-less
 install happily pulls the SDK **57** copy of `expo-asset` (and `expo-constants`
 behind it) into an otherwise-56 tree — JS from one SDK against Expo Go's native
