@@ -4,7 +4,12 @@ An emotion diary and second brain for iPhone. Name it after the girl from *Insid
 Out*, because that is the idea: every day becomes a coloured orb, and all your
 orbs together make a globe you can spin.
 
-Built with Expo (SDK 57) + React Native + expo-router, TypeScript throughout.
+Built with Expo (SDK 56) + React Native + expo-router, TypeScript throughout.
+
+> Pinned to **SDK 56 deliberately**. That is what the App Store build of Expo Go
+> currently runs. SDK 57 is on npm, but Expo Go rejects it with *"Project is
+> incompatible with this version of Expo Go"* until Apple ships the newer client.
+> Don't run `npx expo install --fix` expecting 57 — it will break Expo Go again.
 
 ---
 
@@ -26,9 +31,13 @@ npx eas build -p ios      # cloud build
 
 `npm run lint` runs a TypeScript check over the whole project.
 
-> The repo ships an `.npmrc` with `legacy-peer-deps=true`. The Expo 57 dependency
-> tree pins `react@19.2.3` while a transitive `react-dom` asks for `^19.2.8`;
-> without the flag npm refuses to install anything new.
+### About the pinned versions
+
+`expo-audio` declares an unbounded `expo-asset@"*"` peer, so a lockfile-less
+install happily pulls the SDK **57** copy of `expo-asset` (and `expo-constants`
+behind it) into an otherwise-56 tree — JS from one SDK against Expo Go's native
+side from another. `expo-asset` and `expo-font` are therefore pinned as direct
+dependencies. Keep `package-lock.json` committed and this stays a non-issue.
 
 ---
 
