@@ -9,33 +9,39 @@ import React, {
   useState,
 } from 'react';
 
-import { emotionColor } from '@/emotions/catalog';
-import { spectrum } from '@/theme';
-import { streakFrom, todayKey } from '@/utils/date';
+import { EmotionKey, emotionLabel } from '@/emotions/palette';
 import type { DayKey } from '@/utils/date';
+import { todayKey } from '@/utils/date';
 import { makeId } from '@/utils/id';
+import { isBlank, Orb, orbFromLegacyMood } from './orb';
 import { buildSeed } from './seed';
-import { DiaryState, EMPTY_STATE, Entry, MoodLog, Profile } from './types';
+import { DiaryState, EMPTY_STATE, Entry, Settings } from './types';
 
 const STORAGE_KEY = 'riley.diary.v1';
 const SEEDED_KEY = 'riley.seeded.v1';
 
 type DiaryContextValue = {
   ready: boolean;
-  state: DiaryState;
-  /** Day -> mood, for the days that have one. */
-  moods: Record<DayKey, MoodLog>;
   entries: Entry[];
-  profile: Profile;
-  todayMood: MoodLog | undefined;
-  streak: number;
+  notes: Record<DayKey, string>;
+  settings: Settings;
+  /** The orb for a day, lifting a legacy mood record if that is all we have. */
+  orbFor: (day: DayKey) => Orb | null;
+  /** Days that have an orb, newest first. */
+  loggedDays: DayKey[];
+  todayOrb: Orb | null;
   entriesFor: (day: DayKey) => Entry[];
-  colorFor: (day: DayKey) => string;
-  saveMood: (mood: Omit<MoodLog, 'updatedAt'>) => Promise<void>;
-  addEntry: (entry: Omit<Entry, 'id' | 'createdAt'> & Partial<Pick<Entry, 'createdAt'>>) => Promise<Entry>;
+  noteFor: (day: DayKey) => string;
+  /** The user's name for a pigment, falling back to Riley's. */
+  nameOf: (key: EmotionKey | string) => string;
+  saveOrb: (orb: Orb) => Promise<void>;
+  saveNote: (day: DayKey, text: string) => Promise<void>;
+  addEntry: (e: Omit<Entry, 'id' | 'createdAt'> & Partial<Pick<Entry, 'createdAt'>>) => Promise<Entry>;
   updateEntry: (id: string, patch: Partial<Entry>) => Promise<void>;
   deleteEntry: (id: string) => Promise<void>;
-  updateProfile: (patch: Partial<Profile>) => Promise<void>;
+  deleteDay: (day: DayKey) => Promise<void>;
+  renameEmotion: (key: EmotionKey, name: string | null) => Promise<void>;
+  updateSettings: (patch: Partial<Settings>) => Promise<void>;
   resetAll: () => Promise<void>;
 };
 
@@ -56,7 +62,14 @@ export const DiaryProvider = ({ children }: { children: React.ReactNode }) => {
         ]);
         if (cancelled) return;
         if (raw) {
-          setState({ ...EMPTY_STATE, ...(JSON.parse(raw) as DiaryState) });
+          const parsed = JSON.parse(raw) as Partial<DiaryState>;
+          setState({
+            ...EMPTY_STATE,
+            ...parsed,
+            settings: { ...EMPTY_STATE.settings, ...(parsed.settings ?? {}) },
+            // Entries used to carry an `emotion` tint; the orb owns colour now.
+            entries: (parsed.entries ?? []).map((e) => ({ ...e, tags: e.tags ?? [] })),
+          });
         } else if (!seeded) {
           const seed = buildSeed();
           setState(seed);
@@ -66,7 +79,7 @@ export const DiaryProvider = ({ children }: { children: React.ReactNode }) => {
           ]);
         }
       } catch {
-        // A corrupt store should never keep someone out of their diary.
+        // A corrupt store must never lock someone out of their own diary.
         setState(EMPTY_STATE);
       } finally {
         if (!cancelled) setReady(true);
@@ -77,7 +90,7 @@ export const DiaryProvider = ({ children }: { children: React.ReactNode }) => {
     };
   }, []);
 
-  /** Debounced persist — typing in the composer shouldn't hit disk per keystroke. */
+  /** Debounced: typing a reflection should not hit disk on every keystroke. */
   const persist = useCallback((next: DiaryState) => {
     if (writeTimer.current) clearTimeout(writeTimer.current);
     writeTimer.current = setTimeout(() => {
@@ -87,9 +100,8 @@ export const DiaryProvider = ({ children }: { children: React.ReactNode }) => {
 
   const commit = useCallback(
     (updater: (prev: DiaryState) => DiaryState) => {
-      let next: DiaryState = EMPTY_STATE;
       setState((prev) => {
-        next = updater(prev);
+        const next = updater(prev);
         persist(next);
         return next;
       });
@@ -97,12 +109,24 @@ export const DiaryProvider = ({ children }: { children: React.ReactNode }) => {
     [persist]
   );
 
-  const saveMood = useCallback(
-    async (mood: Omit<MoodLog, 'updatedAt'>) => {
+  const saveOrb = useCallback(
+    async (orb: Orb) => {
       commit((prev) => ({
         ...prev,
-        moods: { ...prev.moods, [mood.day]: { ...mood, updatedAt: new Date().toISOString() } },
+        orbs: { ...prev.orbs, [orb.day]: { ...orb, updatedAt: new Date().toISOString() } },
       }));
+    },
+    [commit]
+  );
+
+  const saveNote = useCallback(
+    async (day: DayKey, text: string) => {
+      commit((prev) => {
+        const notes = { ...prev.notes };
+        if (text.trim()) notes[day] = text.trim();
+        else delete notes[day];
+        return { ...prev, notes };
+      });
     },
     [commit]
   );
@@ -137,9 +161,36 @@ export const DiaryProvider = ({ children }: { children: React.ReactNode }) => {
     [commit]
   );
 
-  const updateProfile = useCallback(
-    async (patch: Partial<Profile>) => {
-      commit((prev) => ({ ...prev, profile: { ...prev.profile, ...patch } }));
+  const deleteDay = useCallback(
+    async (day: DayKey) => {
+      commit((prev) => {
+        const orbs = { ...prev.orbs };
+        const moods = { ...prev.moods };
+        const notes = { ...prev.notes };
+        delete orbs[day];
+        delete moods[day];
+        delete notes[day];
+        return { ...prev, orbs, moods, notes, entries: prev.entries.filter((e) => e.day !== day) };
+      });
+    },
+    [commit]
+  );
+
+  const renameEmotion = useCallback(
+    async (key: EmotionKey, name: string | null) => {
+      commit((prev) => {
+        const renames = { ...prev.settings.renames };
+        if (name && name.trim()) renames[key] = name.trim().slice(0, 24);
+        else delete renames[key];
+        return { ...prev, settings: { ...prev.settings, renames } };
+      });
+    },
+    [commit]
+  );
+
+  const updateSettings = useCallback(
+    async (patch: Partial<Settings>) => {
+      commit((prev) => ({ ...prev, settings: { ...prev.settings, ...patch } }));
     },
     [commit]
   );
@@ -149,6 +200,20 @@ export const DiaryProvider = ({ children }: { children: React.ReactNode }) => {
     setState(fresh);
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
   }, []);
+
+  /** Legacy mood records lifted into orbs once, then memoised. */
+  const migrated = useMemo(() => {
+    const out: Record<DayKey, Orb> = {};
+    for (const [day, mood] of Object.entries(state.moods)) {
+      if (!state.orbs[day]) out[day] = orbFromLegacyMood(mood);
+    }
+    return out;
+  }, [state.moods, state.orbs]);
+
+  const orbFor = useCallback(
+    (day: DayKey): Orb | null => state.orbs[day] ?? migrated[day] ?? null,
+    [state.orbs, migrated]
+  );
 
   const entriesByDay = useMemo(() => {
     const map = new Map<DayKey, Entry[]>();
@@ -160,44 +225,57 @@ export const DiaryProvider = ({ children }: { children: React.ReactNode }) => {
     return map;
   }, [state.entries]);
 
-  const streak = useMemo(() => {
-    const logged = new Set<DayKey>(Object.keys(state.moods));
-    for (const e of state.entries) logged.add(e.day);
-    return streakFrom(logged);
-  }, [state.moods, state.entries]);
+  const loggedDays = useMemo(
+    () =>
+      Array.from(new Set([...Object.keys(state.orbs), ...Object.keys(migrated)]))
+        .filter((d) => !isBlank(state.orbs[d] ?? migrated[d]))
+        .sort((a, b) => (a < b ? 1 : -1)),
+    [state.orbs, migrated]
+  );
+
+  const nameOf = useCallback(
+    (key: EmotionKey | string) =>
+      state.settings.renames[key as EmotionKey] ?? emotionLabel(key),
+    [state.settings.renames]
+  );
 
   const value = useMemo<DiaryContextValue>(
     () => ({
       ready,
-      state,
-      moods: state.moods,
       entries: state.entries,
-      profile: state.profile,
-      todayMood: state.moods[todayKey()],
-      streak,
+      notes: state.notes,
+      settings: state.settings,
+      orbFor,
+      loggedDays,
+      todayOrb: orbFor(todayKey()),
       entriesFor: (day) => entriesByDay.get(day) ?? [],
-      colorFor: (day) => {
-        const m = state.moods[day];
-        if (m) return emotionColor(m.emotion);
-        return entriesByDay.has(day) ? spectrum.neutral : 'transparent';
-      },
-      saveMood,
+      noteFor: (day) => state.notes[day] ?? state.moods[day]?.note ?? '',
+      nameOf,
+      saveOrb,
+      saveNote,
       addEntry,
       updateEntry,
       deleteEntry,
-      updateProfile,
+      deleteDay,
+      renameEmotion,
+      updateSettings,
       resetAll,
     }),
     [
       ready,
       state,
-      streak,
+      orbFor,
+      loggedDays,
       entriesByDay,
-      saveMood,
+      nameOf,
+      saveOrb,
+      saveNote,
       addEntry,
       updateEntry,
       deleteEntry,
-      updateProfile,
+      deleteDay,
+      renameEmotion,
+      updateSettings,
       resetAll,
     ]
   );

@@ -12,277 +12,201 @@ import * as Haptics from 'expo-haptics';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, {
-  SharedValue,
   Easing,
+  SharedValue,
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
-  withSpring,
   withTiming,
 } from 'react-native-reanimated';
 
-import { clayTight, motion, palette, radius, space, spectrum, type } from '@/theme';
+import { useTheme } from '@/design/theme';
+import { MIN_TARGET, motion, radius, space } from '@/design/tokens';
 import { hashUnit } from '@/utils/id';
 
-const BARS = 34;
+const BARS = 28;
 
-const formatClock = (seconds: number) => {
+const clock = (seconds: number) => {
   const s = Math.max(0, Math.floor(seconds));
   return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
-};
-
-/** Live level meter — a row of bars that breathe while you talk. */
-const Waveform = ({ active, seed = 'w' }: { active: boolean; seed?: string }) => {
-  const pulse = useSharedValue(0);
-
-  useEffect(() => {
-    if (active) {
-      pulse.value = withRepeat(
-        withTiming(1, { duration: 620, easing: Easing.inOut(Easing.quad) }),
-        -1,
-        true
-      );
-    } else {
-      pulse.value = withTiming(0, { duration: motion.base });
-    }
-  }, [active, pulse]);
-
-  const bars = useMemo(
-    () => Array.from({ length: BARS }, (_, i) => 0.2 + hashUnit(`${seed}:${i}`) * 0.8),
-    [seed]
-  );
-
-  return (
-    <View style={styles.wave}>
-      {bars.map((h, i) => (
-        <WaveBar key={i} base={h} index={i} pulse={pulse} />
-      ))}
-    </View>
-  );
 };
 
 const WaveBar = ({
   base,
   index,
   pulse,
+  color,
 }: {
   base: number;
   index: number;
   pulse: SharedValue<number>;
+  color: string;
 }) => {
   const style = useAnimatedStyle(() => {
     'worklet';
-    const phase = Math.sin(index * 0.7 + pulse.value * Math.PI * 2);
-    const h = 3 + base * 22 * (0.35 + pulse.value * 0.65) * (0.6 + phase * 0.4 + 0.4);
-    return { height: Math.max(3, h) };
+    const phase = Math.sin(index * 0.6 + pulse.value * Math.PI * 2);
+    return { height: Math.max(2, 2 + base * 16 * (0.3 + pulse.value * 0.7) * (0.7 + phase * 0.3)) };
   });
-  return <Animated.View style={[styles.waveBar, style]} />;
+  return <Animated.View style={[styles.bar, { backgroundColor: color }, style]} />;
 };
 
-type Props = {
-  /** Called with the finished recording's local uri and length in seconds. */
+/** A voice note, recorded in place. Nothing about it is celebratory. */
+export const VoiceRecorder = ({
+  onCaptured,
+}: {
   onCaptured: (uri: string, duration: number) => void;
-  tint?: string;
-};
-
-export const VoiceRecorder = ({ onCaptured, tint = spectrum.confidence }: Props) => {
+}) => {
+  const { c, t, reduceMotion } = useTheme();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const recorderState = useAudioRecorderState(recorder, 120);
+  const state = useAudioRecorderState(recorder, 140);
   const [granted, setGranted] = useState<boolean | null>(null);
-  const ring = useSharedValue(0);
+  const pulse = useSharedValue(0);
+
+  const recording = state.isRecording;
 
   useEffect(() => {
     (async () => {
       try {
         const res = await AudioModule.requestRecordingPermissionsAsync();
         setGranted(res.granted);
-        if (res.granted) {
-          await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
-        }
+        if (res.granted) await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
       } catch {
         setGranted(false);
       }
     })();
   }, []);
 
-  const isRecording = recorderState.isRecording;
-
   useEffect(() => {
-    ring.value = withSpring(isRecording ? 1 : 0, motion.springSoft);
-  }, [isRecording, ring]);
+    if (recording && !reduceMotion) {
+      pulse.value = withRepeat(
+        withTiming(1, { duration: 700, easing: Easing.inOut(Easing.quad) }),
+        -1,
+        true
+      );
+    } else {
+      pulse.value = withTiming(0, { duration: motion.control });
+    }
+  }, [recording, reduceMotion, pulse]);
+
+  const bars = useMemo(
+    () => Array.from({ length: BARS }, (_, i) => 0.25 + hashUnit(`b${i}`) * 0.75),
+    []
+  );
 
   const start = useCallback(async () => {
     if (granted === false) {
-      Alert.alert(
-        'Microphone is off',
-        'Riley needs microphone access to record a voice note. You can turn it on in Settings.'
-      );
+      Alert.alert('Microphone is off', 'Riley needs the microphone to record a voice note.');
       return;
     }
     try {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
       await recorder.prepareToRecordAsync();
       recorder.record();
     } catch {
-      Alert.alert('Could not start recording', 'Something went wrong reaching the microphone.');
+      Alert.alert('Could not start recording');
     }
   }, [granted, recorder]);
 
   const stop = useCallback(async () => {
     try {
-      const seconds = Math.round((recorderState.durationMillis ?? 0) / 1000);
+      const seconds = Math.round((state.durationMillis ?? 0) / 1000);
       await recorder.stop();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       if (recorder.uri) onCaptured(recorder.uri, seconds);
     } catch {
-      Alert.alert('Could not save that recording', 'Give it another try.');
+      Alert.alert('Could not save that recording');
     }
-  }, [recorder, recorderState.durationMillis, onCaptured]);
-
-  const ringStyle = useAnimatedStyle(() => ({
-    opacity: 0.15 + ring.value * 0.55,
-    transform: [{ scale: 1 + ring.value * 0.22 }],
-  }));
+  }, [recorder, state.durationMillis, onCaptured]);
 
   return (
-    <View style={styles.recorderRoot}>
-      <View style={styles.recorderTop}>
-        <Waveform active={isRecording} />
+    <View style={[styles.recorder, { borderColor: c.line }]}>
+      <View style={styles.wave}>
+        {bars.map((h, i) => (
+          <WaveBar key={i} base={h} index={i} pulse={pulse} color={recording ? c.accent : c.lineStrong} />
+        ))}
       </View>
-      <View style={styles.recorderBottom}>
-        <Text style={[type.caption, { color: isRecording ? tint : palette.inkFaint }]}>
-          {isRecording
-            ? formatClock((recorderState.durationMillis ?? 0) / 1000)
-            : 'Tap to record a voice note'}
-        </Text>
-        <Pressable onPress={isRecording ? stop : start} hitSlop={12}>
-          <View style={styles.micWrap}>
-            <Animated.View
-              style={[
-                styles.micRing,
-                { backgroundColor: tint, shadowColor: tint },
-                ringStyle,
-              ]}
-            />
-            <View style={[styles.micButton, isRecording && { backgroundColor: tint }]}>
-              <Ionicons
-                name={isRecording ? 'stop' : 'mic'}
-                size={22}
-                color={isRecording ? '#FFFFFF' : palette.ink}
-              />
-            </View>
-          </View>
-        </Pressable>
-      </View>
+      <Text style={t('caption', { color: recording ? c.ink : c.inkFaint })}>
+        {recording ? clock((state.durationMillis ?? 0) / 1000) : 'Voice note'}
+      </Text>
+      <Pressable
+        onPress={recording ? stop : start}
+        accessibilityRole="button"
+        accessibilityLabel={recording ? 'Stop recording' : 'Start recording'}
+        hitSlop={10}
+        style={[
+          styles.mic,
+          { backgroundColor: recording ? c.ink : 'transparent', borderColor: recording ? c.ink : c.lineStrong },
+        ]}
+      >
+        <Ionicons name={recording ? 'stop' : 'mic-outline'} size={18} color={recording ? c.canvas : c.ink} />
+      </Pressable>
     </View>
   );
 };
 
-/** Compact playback row for a saved voice note. */
-export const VoiceNotePlayer = ({
-  uri,
-  duration,
-  tint = spectrum.confidence,
-}: {
-  uri: string;
-  duration?: number;
-  tint?: string;
-}) => {
+/** Playback for a saved note. */
+export const VoiceNotePlayer = ({ uri, duration }: { uri: string; duration?: number }) => {
+  const { c, t } = useTheme();
   const player = useAudioPlayer({ uri });
   const status = useAudioPlayerStatus(player);
-  const playing = status.playing;
 
-  const total = duration ?? (status.duration || 0);
+  const total = duration ?? status.duration ?? 0;
   const progress = total > 0 ? Math.min(1, (status.currentTime || 0) / total) : 0;
 
   return (
-    <View style={[clayTight, styles.player]}>
+    <View style={styles.player}>
       <Pressable
         hitSlop={10}
+        accessibilityRole="button"
+        accessibilityLabel={status.playing ? 'Pause voice note' : 'Play voice note'}
         onPress={() => {
           Haptics.selectionAsync().catch(() => {});
-          if (playing) {
-            player.pause();
-          } else {
+          if (status.playing) player.pause();
+          else {
             if (progress >= 0.999) player.seekTo(0);
             player.play();
           }
         }}
-        style={[styles.playButton, { backgroundColor: tint }]}
+        style={[styles.play, { borderColor: c.lineStrong }]}
       >
-        <Ionicons name={playing ? 'pause' : 'play'} size={15} color="#FFFFFF" />
+        <Ionicons name={status.playing ? 'pause' : 'play'} size={14} color={c.ink} />
       </Pressable>
-      <View style={styles.track}>
-        <View style={[styles.trackFill, { width: `${progress * 100}%`, backgroundColor: tint }]} />
+      <View style={[styles.track, { backgroundColor: c.lineStrong }]}>
+        <View style={[styles.fill, { width: `${progress * 100}%`, backgroundColor: c.ink }]} />
       </View>
-      <Text style={type.caption}>{formatClock(total)}</Text>
+      <Text style={t('caption', { color: c.inkFaint })}>{clock(total)}</Text>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  recorderRoot: { gap: space.md },
-  recorderTop: { height: 40, justifyContent: 'center' },
-  recorderBottom: {
+  recorder: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: space.md,
+    paddingVertical: space.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  wave: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    height: 36,
-  },
-  waveBar: {
-    width: 3,
-    borderRadius: 2,
-    backgroundColor: palette.inkGhost,
-  },
-  micWrap: { width: 52, height: 52, alignItems: 'center', justifyContent: 'center' },
-  micRing: {
-    position: 'absolute',
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.6,
-    shadowRadius: 16,
-  },
-  micButton: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.9)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: palette.hairline,
-  },
-  player: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    paddingHorizontal: space.sm,
-    paddingVertical: space.sm,
-    borderRadius: radius.md,
-    backgroundColor: 'rgba(255,255,255,0.7)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: palette.hairline,
-  },
-  playButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+  wave: { flexDirection: 'row', alignItems: 'center', gap: 2, flex: 1, height: 22 },
+  bar: { width: 2, borderRadius: 1 },
+  mic: {
+    width: MIN_TARGET,
+    height: MIN_TARGET,
+    borderRadius: MIN_TARGET / 2,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  track: {
-    flex: 1,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: 'rgba(120,105,160,0.14)',
-    overflow: 'hidden',
+  player: { flexDirection: 'row', alignItems: 'center', gap: space.md, minHeight: MIN_TARGET },
+  play: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  trackFill: { height: 4, borderRadius: 2 },
+  track: { flex: 1, height: 2, borderRadius: 1, overflow: 'hidden' },
+  fill: { height: 2, borderRadius: 1 },
 });

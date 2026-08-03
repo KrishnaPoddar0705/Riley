@@ -1,246 +1,316 @@
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
-  SectionList,
+  FlatList,
+  Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 
-import { KIND_META } from '@/components/Capture';
-import { ClayCard, Pill, PressableCard, ScriptHeading } from '@/components/Clay';
-import { EntryCard } from '@/components/EntryCard';
-import { Screen } from '@/components/Screen';
-import { emotionColor, emotionLabel } from '@/emotions/catalog';
+import { EmotionalOrb } from '@/components/EmotionalOrb';
+import { JournalEntryRow } from '@/components/JournalEntryRow';
+import { Paper } from '@/components/Paper';
+import { DateHeader, IconButton, Rule } from '@/components/Primitives';
+import { useTheme } from '@/design/theme';
+import { MIN_TARGET, radius, space } from '@/design/tokens';
+import { EMOTIONS, EmotionKey, emotionColor } from '@/emotions/palette';
 import { useDiary } from '@/store/DiaryProvider';
-import type { CaptureKind, Entry } from '@/store/types';
-import { clay, clayTight, palette, radius, space, spectrum, type } from '@/theme';
-import { relativeDay } from '@/utils/date';
+import { composition, isBlank } from '@/store/orb';
+import {
+  fromDayKey,
+  monthMatrix,
+  monthTitle,
+  todayKey,
+  WEEKDAYS_MIN,
+} from '@/utils/date';
 
-const FILTERS: { value: CaptureKind | 'all'; label: string }[] = [
-  { value: 'all', label: 'Everything' },
-  { value: 'text', label: 'Notes' },
-  { value: 'voice', label: 'Voice' },
-  { value: 'photo', label: 'Photos' },
-  { value: 'video', label: 'Video' },
-  { value: 'link', label: 'Links' },
-];
+type Mode = 'timeline' | 'calendar';
 
+/**
+ * The journal. A chronological read of the diary, with the month grid folded in
+ * behind a toggle rather than occupying a navigation slot of its own.
+ */
 export default function JournalScreen() {
   const router = useRouter();
-  const { entries, moods, todayMood } = useDiary();
-  const [filter, setFilter] = useState<CaptureKind | 'all'>('all');
+  const { width } = useWindowDimensions();
+  const { c, t } = useTheme();
+  const { orbFor, noteFor, entriesFor, nameOf, loggedDays, entries } = useDiary();
+
+  const [mode, setMode] = useState<Mode>('timeline');
   const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<EmotionKey | null>(null);
+  const [searching, setSearching] = useState(false);
 
-  const tint = todayMood ? emotionColor(todayMood.emotion) : spectrum.confidence;
+  const now = new Date();
+  const [cursor, setCursor] = useState({ year: now.getFullYear(), month: now.getMonth() });
 
-  const sections = useMemo(() => {
+  /** Days worth showing: anything with an orb, a reflection, or a saved thing. */
+  const days = useMemo(() => {
+    const set = new Set<string>(loggedDays);
+    for (const e of entries) set.add(e.day);
+    return Array.from(set).sort((a, b) => (a < b ? 1 : -1));
+  }, [loggedDays, entries]);
+
+  const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const matches = entries.filter((e) => {
-      if (filter !== 'all' && e.kind !== filter) return false;
+    return days.filter((day) => {
+      if (filter) {
+        const orb = orbFor(day);
+        if (isBlank(orb) || !orb!.stops.some((s) => s.emotion === filter)) return false;
+      }
       if (!q) return true;
-      const haystack = [
-        e.text,
-        ...e.tags,
-        ...e.attachments.map((a) => `${a.title ?? ''} ${a.uri}`),
-      ]
+      const hay = [noteFor(day), ...entriesFor(day).map((e) => `${e.text} ${e.tags.join(' ')}`)]
         .join(' ')
         .toLowerCase();
-      return haystack.includes(q);
+      return hay.includes(q);
     });
+  }, [days, query, filter, orbFor, noteFor, entriesFor]);
 
-    const byDay = new Map<string, Entry[]>();
-    for (const e of matches) {
-      const list = byDay.get(e.day);
-      if (list) list.push(e);
-      else byDay.set(e.day, [e]);
-    }
+  const cells = useMemo(() => monthMatrix(cursor.year, cursor.month), [cursor]);
+  const cell = Math.floor((width - space.lg * 2) / 7);
 
-    return Array.from(byDay.entries())
-      .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-      .map(([day, data]) => ({
-        day,
-        title: relativeDay(day),
-        color: moods[day] ? emotionColor(moods[day].emotion) : null,
-        mood: moods[day] ? emotionLabel(moods[day].emotion) : null,
-        data: data.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
-      }));
-  }, [entries, moods, filter, query]);
+  const stepMonth = (delta: number) => {
+    Haptics.selectionAsync().catch(() => {});
+    setCursor((cur) => {
+      const d = new Date(cur.year, cur.month + delta, 1);
+      return { year: d.getFullYear(), month: d.getMonth() };
+    });
+  };
+
+  const isFuture =
+    cursor.year > now.getFullYear() ||
+    (cursor.year === now.getFullYear() && cursor.month >= now.getMonth());
 
   return (
-    <Screen tint={tint}>
+    <Paper>
       <View style={styles.head}>
-        <ScriptHeading plain="Your" script="second brain" align="left" size={25} />
-        <PressableCard onPress={() => router.push('/compose')} style={styles.addButton}>
-          <Ionicons name="add" size={22} color={palette.ink} />
-        </PressableCard>
-      </View>
-
-      <View style={styles.searchWrap}>
-        <View style={[clayTight, styles.search]}>
-          <Ionicons name="search" size={16} color={palette.inkFaint} />
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder="Search notes, links, tags"
-            placeholderTextColor={palette.inkGhost}
-            style={styles.searchInput}
-            returnKeyType="search"
-            clearButtonMode="while-editing"
-            autoCorrect={false}
-          />
+        <DateHeader meta="Journal" />
+        <View style={styles.headActions}>
+          <IconButton
+            label={searching ? 'Close search' : 'Search'}
+            onPress={() => {
+              setSearching((s) => !s);
+              if (searching) setQuery('');
+            }}
+          >
+            <Ionicons name={searching ? 'close' : 'search'} size={18} color={c.inkSoft} />
+          </IconButton>
+          <IconButton
+            label={mode === 'timeline' ? 'Show calendar' : 'Show timeline'}
+            onPress={() => {
+              Haptics.selectionAsync().catch(() => {});
+              setMode((m) => (m === 'timeline' ? 'calendar' : 'timeline'));
+            }}
+          >
+            <Ionicons
+              name={mode === 'timeline' ? 'calendar-outline' : 'list-outline'}
+              size={18}
+              color={c.inkSoft}
+            />
+          </IconButton>
         </View>
       </View>
 
-      <View style={styles.filters}>
-        <SectionFilters value={filter} onChange={setFilter} />
-      </View>
+      {searching ? (
+        <View style={[styles.search, { borderColor: c.line }]}>
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search what you wrote"
+            placeholderTextColor={c.inkFaint}
+            style={[t('body'), { flex: 1, color: c.ink }]}
+            autoFocus
+            returnKeyType="search"
+            clearButtonMode="while-editing"
+            accessibilityLabel="Search journal"
+          />
+        </View>
+      ) : null}
 
-      <SectionList
-        sections={sections}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.list}
-        showsVerticalScrollIndicator={false}
-        stickySectionHeadersEnabled={false}
-        keyboardShouldPersistTaps="handled"
-        renderSectionHeader={({ section }) => (
-          <Animated.View entering={FadeIn.duration(300)} style={styles.sectionHead}>
-            {section.color ? (
-              <View
-                style={[
-                  styles.sectionDot,
-                  { backgroundColor: section.color, shadowColor: section.color },
-                ]}
-              />
-            ) : (
-              <View style={[styles.sectionDot, styles.sectionDotEmpty]} />
-            )}
-            <Text style={[type.label, { color: palette.ink }]}>{section.title}</Text>
-            {section.mood ? (
-              <Text style={[type.caption, { marginLeft: 'auto' }]}>{section.mood}</Text>
-            ) : null}
-          </Animated.View>
-        )}
-        renderItem={({ item, index }) => (
-          <Animated.View
-            entering={FadeInDown.delay(Math.min(index * 40, 200)).duration(340)}
-            style={styles.itemWrap}
-          >
-            <EntryCard entry={item} onPress={() => router.push(`/entry/${item.id}`)} />
-          </Animated.View>
-        )}
-        ListEmptyComponent={
-          <ClayCard style={styles.empty}>
-            <Text style={type.heading}>Nothing here yet</Text>
-            <Text style={[type.body, { textAlign: 'center', marginTop: 6 }]}>
-              {query
-                ? 'No entry matches that search.'
-                : 'Save a thought, a voice note, a photo or a link and it will land here.'}
+      {/* Colour filter. Named, not colour-only. */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.filters}
+      >
+        <FilterChip label="All" active={!filter} onPress={() => setFilter(null)} />
+        {EMOTIONS.map((e) => (
+          <FilterChip
+            key={e.key}
+            label={nameOf(e.key)}
+            color={e.color}
+            active={filter === e.key}
+            onPress={() => setFilter((f) => (f === e.key ? null : e.key))}
+          />
+        ))}
+      </ScrollView>
+
+      {mode === 'timeline' ? (
+        <FlatList
+          data={visible}
+          keyExtractor={(d) => d}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.list}
+          ItemSeparatorComponent={() => <Rule />}
+          renderItem={({ item }) => (
+            <JournalEntryRow
+              day={item}
+              orb={orbFor(item)}
+              note={noteFor(item)}
+              entries={entriesFor(item)}
+              nameOf={nameOf}
+              onPress={() => router.push(`/day/${item}`)}
+            />
+          )}
+          ListEmptyComponent={
+            <Text style={[t('body', { color: c.inkFaint }), styles.empty]}>
+              {query || filter ? 'Nothing matches that.' : 'Your days will collect here.'}
             </Text>
-            <PressableCard onPress={() => router.push('/compose')} style={styles.emptyCta}>
-              <Ionicons name="add" size={16} color={palette.ink} />
-              <Text style={[type.label, { color: palette.ink }]}>Add something</Text>
-            </PressableCard>
-          </ClayCard>
-        }
-      />
-    </Screen>
+          }
+        />
+      ) : (
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.list}>
+          <View style={styles.monthBar}>
+            <IconButton label="Previous month" onPress={() => stepMonth(-1)}>
+              <Ionicons name="chevron-back" size={18} color={c.inkSoft} />
+            </IconButton>
+            <Text style={t('heading')}>{monthTitle(cursor.year, cursor.month)}</Text>
+            <IconButton
+              label="Next month"
+              onPress={() => !isFuture && stepMonth(1)}
+              style={{ opacity: isFuture ? 0.25 : 1 }}
+            >
+              <Ionicons name="chevron-forward" size={18} color={c.inkSoft} />
+            </IconButton>
+          </View>
+
+          <View style={styles.weekHead}>
+            {WEEKDAYS_MIN.map((d, i) => (
+              <View key={i} style={{ width: cell, alignItems: 'center' }}>
+                <Text style={t('caption', { color: c.inkFaint })}>{d}</Text>
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.grid}>
+            {cells.map((day, i) => {
+              if (!day) return <View key={`p${i}`} style={{ width: cell, height: cell + 14 }} />;
+              const orb = orbFor(day);
+              const blank = isBlank(orb);
+              const isToday = day === todayKey();
+              const d = Math.round(cell * 0.6);
+              return (
+                <Pressable
+                  key={day}
+                  onPress={() => router.push(`/day/${day}`)}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    blank
+                      ? `${fromDayKey(day).getDate()}, nothing recorded`
+                      : `${fromDayKey(day).getDate()}, ${composition(orb!)
+                          .slice(0, 2)
+                          .map((p) => nameOf(p.emotion))
+                          .join(' and ')}`
+                  }
+                  style={{ width: cell, height: cell + 14, alignItems: 'center' }}
+                >
+                  {blank ? (
+                    // Empty days stay empty. No outlined placeholder rings.
+                    <View style={{ height: d }} />
+                  ) : (
+                    <EmotionalOrb orb={orb} size={d} glow={false} />
+                  )}
+                  <Text
+                    style={t('caption', {
+                      fontSize: 11,
+                      marginTop: 4,
+                      color: isToday ? c.ink : c.inkFaint,
+                      fontWeight: isToday ? '700' : '400',
+                    })}
+                  >
+                    {fromDayKey(day).getDate()}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </ScrollView>
+      )}
+    </Paper>
   );
 }
 
-const SectionFilters = ({
-  value,
-  onChange,
+const FilterChip = ({
+  label,
+  color,
+  active,
+  onPress,
 }: {
-  value: CaptureKind | 'all';
-  onChange: (v: CaptureKind | 'all') => void;
-}) => (
-  <Animated.ScrollView
-    horizontal
-    showsHorizontalScrollIndicator={false}
-    contentContainerStyle={{ gap: space.xs, paddingHorizontal: space.md }}
-  >
-    {FILTERS.map((f) => (
-      <Pill
-        key={f.value}
-        label={f.label}
-        active={value === f.value}
-        tint={f.value === 'all' ? undefined : KIND_META[f.value].color}
-        onPress={() => onChange(f.value)}
-      />
-    ))}
-  </Animated.ScrollView>
-);
+  label: string;
+  color?: string;
+  active?: boolean;
+  onPress: () => void;
+}) => {
+  const { c, t } = useTheme();
+  return (
+    <Pressable
+      onPress={() => {
+        Haptics.selectionAsync().catch(() => {});
+        onPress();
+      }}
+      accessibilityRole="button"
+      accessibilityState={{ selected: !!active }}
+      accessibilityLabel={label}
+      style={[
+        styles.chip,
+        { borderColor: active ? c.ink : c.line, backgroundColor: active ? c.accentSoft : 'transparent' },
+      ]}
+    >
+      {color ? <View style={[styles.chipDot, { backgroundColor: color }]} /> : null}
+      <Text style={t('caption', { color: active ? c.ink : c.inkSoft })}>{label}</Text>
+    </Pressable>
+  );
+};
 
 const styles = StyleSheet.create({
   head: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: space.md,
-    paddingTop: space.sm,
+    paddingTop: space.md,
   },
-  addButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.82)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: palette.hairline,
-    ...clay,
-  },
-  searchWrap: { paddingHorizontal: space.md, marginTop: space.md },
+  headActions: { flexDirection: 'row', alignItems: 'center' },
   search: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    height: 44,
-    paddingHorizontal: space.md,
-    borderRadius: radius.pill,
-    backgroundColor: 'rgba(255,255,255,0.72)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: palette.hairline,
-  },
-  searchInput: { flex: 1, ...type.body, fontSize: 15, color: palette.ink, paddingVertical: 0 },
-  filters: { marginTop: space.sm, marginHorizontal: -space.md },
-  list: { paddingHorizontal: space.md, paddingTop: space.md, paddingBottom: 120 },
-  sectionHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     paddingVertical: space.sm,
-    marginTop: space.xs,
+    marginTop: space.sm,
   },
-  sectionDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.7,
-    shadowRadius: 6,
-  },
-  sectionDotEmpty: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: palette.inkGhost,
-  },
-  itemWrap: { marginBottom: space.sm },
-  empty: { alignItems: 'center', marginTop: space.xl },
-  emptyCta: {
+  filters: { gap: space.sm, paddingVertical: space.md, paddingRight: space.lg },
+  chip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: space.md,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    height: 34,
+    paddingHorizontal: space.md,
     borderRadius: radius.pill,
-    backgroundColor: 'rgba(255,255,255,0.8)',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: palette.hairline,
   },
+  chipDot: { width: 8, height: 8, borderRadius: 4 },
+  list: { paddingBottom: space.xxl },
+  empty: { textAlign: 'center', marginTop: space.xxl },
+  monthBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: space.md,
+    minHeight: MIN_TARGET,
+  },
+  weekHead: { flexDirection: 'row', marginBottom: space.sm },
+  grid: { flexDirection: 'row', flexWrap: 'wrap' },
 });

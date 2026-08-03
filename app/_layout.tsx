@@ -3,68 +3,78 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
 import React, { useEffect } from 'react';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { Grain } from '@/components/Paper';
+import { ThemeProvider, useTheme } from '@/design/theme';
+import { motion } from '@/design/tokens';
 import { DiaryProvider, useDiary } from '@/store/DiaryProvider';
-import { palette } from '@/theme';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 const Navigation = () => {
   const { ready } = useDiary();
+  const { c, scheme, reduceMotion } = useTheme();
 
   useEffect(() => {
     if (ready) SplashScreen.hideAsync().catch(() => {});
   }, [ready]);
 
+  useEffect(() => {
+    SystemUI.setBackgroundColorAsync(c.canvas).catch(() => {});
+  }, [c.canvas]);
+
   return (
-    <Stack
-      screenOptions={{
-        headerShown: false,
-        contentStyle: { backgroundColor: 'transparent' },
-        animation: 'slide_from_right',
-      }}
-    >
-      <Stack.Screen name="(tabs)" />
-      <Stack.Screen
-        name="check-in"
-        options={{ presentation: 'modal', animation: 'slide_from_bottom', gestureEnabled: true }}
-      />
-      <Stack.Screen
-        name="compose"
-        options={{ presentation: 'modal', animation: 'slide_from_bottom', gestureEnabled: true }}
-      />
-      <Stack.Screen
-        name="day/[day]"
-        options={{ presentation: 'modal', animation: 'slide_from_bottom', gestureEnabled: true }}
-      />
-      <Stack.Screen
-        name="entry/[id]"
-        options={{ presentation: 'modal', animation: 'slide_from_bottom', gestureEnabled: true }}
-      />
-    </Stack>
+    <View style={[styles.root, { backgroundColor: c.canvas }]}>
+      {/* Drawn once for the session rather than per screen. */}
+      <Grain />
+      <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          contentStyle: { backgroundColor: 'transparent' },
+          animation: reduceMotion ? 'fade' : 'slide_from_right',
+          animationDuration: motion.screen,
+        }}
+      >
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen
+          name="compose-orb"
+          options={{
+            presentation: 'modal',
+            animation: reduceMotion ? 'fade' : 'slide_from_bottom',
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
+          name="day/[day]"
+          options={{
+            presentation: 'modal',
+            animation: reduceMotion ? 'fade' : 'slide_from_bottom',
+            gestureEnabled: true,
+          }}
+        />
+      </Stack>
+    </View>
   );
 };
 
 export default function RootLayout() {
-  useEffect(() => {
-    SystemUI.setBackgroundColorAsync(palette.haze[0]).catch(() => {});
-  }, []);
-
   return (
     <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
-        <DiaryProvider>
-          <StatusBar style="dark" />
-          <Navigation />
-        </DiaryProvider>
+        <ThemeProvider>
+          <DiaryProvider>
+            <Navigation />
+          </DiaryProvider>
+        </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: palette.haze[0] },
+  root: { flex: 1 },
 });
